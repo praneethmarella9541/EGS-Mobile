@@ -1,14 +1,19 @@
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { supabase } from './supabase';
 import { captureGoogleRefreshToken } from './google-credentials';
 import {
+  getExpoGoReturnUri,
   getMobileOAuthRedirect,
-  isMobileOAuthCallbackUrl,
-  MOBILE_OAUTH_REDIRECT_SCHEME,
+  getOAuthBridgeUrl,
   isExpoGo,
+  isHttpsMobileCallback,
+  isMobileOAuthCallbackUrl,
+  supabaseRedirectIsMobile,
 } from './auth-redirect';
+
+export { getMobileOAuthRedirect, isMobileOAuthCallbackUrl, isExpoGo };
 
 // Identity + Google Forms (create/edit), responses (read), and Drive.file
 // (list/manage the forms our app creates). Least-privilege Drive scope.
@@ -20,6 +25,8 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/forms.responses.readonly',
   'https://www.googleapis.com/auth/drive.file',
 ].join(' ');
+
+const OAUTH_WAIT_MS = 60_000;
 
 let exchangeInFlight: Promise<void> | null = null;
 
@@ -44,64 +51,8 @@ export function parseOAuthCallback(url: string): {
   };
 }
 
-function redirectPrefix(redirectTo: string): string {
-  return redirectTo.split('?')[0]!;
-}
-
-function matchesRedirect(url: string, redirectTo: string): boolean {
-  const prefix = redirectPrefix(redirectTo);
-  return url === prefix || url.startsWith(`${prefix}?`) || url.startsWith(`${prefix}#`);
-}
-
-/** Wait for the OS to open the app via deep link (custom-scheme fallback). */
-function createDeepLinkWaiter(redirectTo: string, timeoutMs = 45_000) {
-  let settled = false;
-  let sub: { remove: () => void } | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-
-  const cleanup = () => {
-    sub?.remove();
-    if (timer) clearTimeout(timer);
-  };
-
-  const promise = new Promise<string>((resolve, reject) => {
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn();
-    };
-
-    sub = Linking.addEventListener('url', ({ url }) => {
-      if (isMobileOAuthCallbackUrl(url) || matchesRedirect(url, redirectTo)) {
-        finish(() => resolve(url));
-      }
-    });
-
-    timer = setTimeout(() => {
-      finish(() =>
-        reject(
-          new Error('Sign-in timed out. Close the browser tab, reopen the app, and try again.')
-        )
-      );
-    }, timeoutMs);
-
-    void Linking.getInitialURL().then((initial) => {
-      if (initial && (isMobileOAuthCallbackUrl(initial) || matchesRedirect(initial, redirectTo))) {
-        finish(() => resolve(initial));
-      }
-    });
-  });
-
-  return {
-    promise,
-    cancel: () => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-      }
-    },
-  };
+export function finishOAuthBrowser(): void {
+  WebBrowser.maybeCompleteAuthSession();
 }
 
 async function exchangeCallbackUrl(callbackUrl: string): Promise<void> {
@@ -128,23 +79,99 @@ async function exchangeCallbackUrl(callbackUrl: string): Promise<void> {
 
 /** Exchange a callback URL into a Supabase session (deduped across handlers). */
 export async function completeOAuthFromUrl(callbackUrl: string): Promise<void> {
-  if (!isMobileOAuthCallbackUrl(callbackUrl)) return;
+  if (!isMobileOAuthCallbackUrl(callbackUrl) && !isHttpsMobileCallback(callbackUrl)) return;
   if (!exchangeInFlight) {
     exchangeInFlight = exchangeCallbackUrl(callbackUrl).finally(() => {
       exchangeInFlight = null;
     });
   }
-  return exchangeInFlight;
+  await exchangeInFlight;
+  finishOAuthBrowser();
 }
 
-/** Google sign-in via in-app browser sheet → returns ?code= to this app. */
+function urlIsOAuthCallback(url: string): boolean {
+  if (isMobileOAuthCallbackUrl(url)) return true;
+  if (isHttpsMobileCallback(url)) return true;
+  const expPrefix = getExpoGoReturnUri().split('?')[0]!;
+  return url.startsWith(expPrefix);
+}
+
+/**
+ * Resolve the OAuth result via every channel Expo Go might use:
+ *  - a deep link (exp:// or egscrm://) carrying the ?code=,
+ *  - the app returning to foreground (re-check getInitialURL + session),
+ *  - a 300ms poll of getSession() (handles the bridge's exp:// fallback hop).
+ * Resolves with a callback URL to exchange, or null if the session already exists
+ * (or it timed out).
+ */
+function waitForOAuthCallback(): { promise: Promise<string | null>; cancel: () => void } {
+  let settled = false;
+  let linkSub: { remove: () => void } | null = null;
+  let appSub: { remove: () => void } | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const cleanup = () => {
+    linkSub?.remove();
+    appSub?.remove();
+    if (pollTimer) clearInterval(pollTimer);
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+  };
+
+  const promise = new Promise<string | null>((resolve) => {
+    const finish = (url: string | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(url);
+    };
+
+    const tryUrl = (url: string | null) => {
+      if (url && urlIsOAuthCallback(url)) finish(url);
+    };
+
+    const trySession = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        finishOAuthBrowser();
+        finish(null);
+      }
+    };
+
+    linkSub = Linking.addEventListener('url', ({ url }) => tryUrl(url));
+    appSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void Linking.getInitialURL().then(tryUrl);
+        void trySession();
+      }
+    });
+    pollTimer = setInterval(() => void trySession(), 300);
+    timeoutTimer = setTimeout(() => finish(null), OAUTH_WAIT_MS);
+
+    void Linking.getInitialURL().then(tryUrl);
+    void trySession();
+  });
+
+  return {
+    promise,
+    cancel: () => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+      }
+    },
+  };
+}
+
+/**
+ * Google sign-in.
+ * Expo Go: bridge → Google → https mobile-callback?code= (captured by the in-app
+ *   browser) → exchange. exp:// is only a delayed server-side fallback.
+ * Dev-client / standalone: egscrm://auth/callback deep link.
+ */
 export async function signInWithGoogle(): Promise<void> {
   const redirectTo = getMobileOAuthRedirect();
-  const deepLinkTarget = redirectTo.startsWith('http') ? MOBILE_OAUTH_REDIRECT_SCHEME : redirectTo;
-  const deepLinkWaiter = createDeepLinkWaiter(
-    deepLinkTarget,
-    isExpoGo() ? 90_000 : Platform.OS === 'ios' ? 60_000 : 45_000
-  );
+  const oauthWaiter = waitForOAuthCallback();
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
@@ -158,8 +185,33 @@ export async function signInWithGoogle(): Promise<void> {
       },
     },
   });
-  if (error) throw error;
-  if (!data.url) throw new Error('Supabase did not return an OAuth URL.');
+  if (error) {
+    oauthWaiter.cancel();
+    throw error;
+  }
+  if (!data.url) {
+    oauthWaiter.cancel();
+    throw new Error('Supabase did not return an OAuth URL.');
+  }
+
+  const redirectParam = decodeURIComponent(
+    new URL(data.url).searchParams.get('redirect_to') ?? ''
+  );
+
+  // If Supabase ignored our redirect (URL not allowlisted), it silently falls
+  // back to the project's Site URL — surface that instead of hanging.
+  if (isExpoGo() && !supabaseRedirectIsMobile(redirectParam)) {
+    oauthWaiter.cancel();
+    throw new Error(
+      `Supabase is redirecting to the website instead of the app.\n\n` +
+        `Expected:\n${redirectTo}\n\n` +
+        `Got:\n${redirectParam || '(empty)'}\n\n` +
+        `Add ${redirectTo} to Supabase → Authentication → URL Configuration → Redirect URLs.`
+    );
+  }
+
+  const browserStartUrl = isExpoGo() ? getOAuthBridgeUrl(data.url) : data.url;
+  const authSessionReturn = (isExpoGo() ? redirectParam || redirectTo : redirectTo).split('?')[0]!;
 
   if (Platform.OS === 'android') {
     try {
@@ -170,8 +222,8 @@ export async function signInWithGoogle(): Promise<void> {
   }
 
   try {
-    const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo, {
-      preferEphemeralSession: true,
+    const result = await WebBrowser.openAuthSessionAsync(browserStartUrl, authSessionReturn, {
+      preferEphemeralSession: false,
       createTask: false,
     });
 
@@ -179,34 +231,28 @@ export async function signInWithGoogle(): Promise<void> {
 
     let callbackUrl: string | null = null;
 
-    if (result.type === 'success' && result.url) {
-      deepLinkWaiter.cancel();
+    if (result.type === 'success' && result.url && urlIsOAuthCallback(result.url)) {
       callbackUrl = result.url;
-    } else if (result.type === 'dismiss') {
-      try {
-        callbackUrl = await deepLinkWaiter.promise;
-      } catch (e) {
-        const { data: sessionData } = await supabase.auth.getSession();
-        if (sessionData.session) return;
-        throw e;
-      }
     } else {
-      deepLinkWaiter.cancel();
-      throw new Error('Google sign-in did not return to the app.');
+      // dismiss / opened: the bridge may still be completing — wait it out.
+      callbackUrl = await oauthWaiter.promise;
     }
 
-    if (!callbackUrl || !isMobileOAuthCallbackUrl(callbackUrl)) {
-      throw new Error('Unexpected OAuth callback URL. Please try again.');
-    }
+    oauthWaiter.cancel();
 
-    await completeOAuthFromUrl(callbackUrl);
+    if (callbackUrl) {
+      await completeOAuthFromUrl(callbackUrl);
+    }
 
     const { data: sessionData } = await supabase.auth.getSession();
     if (!sessionData.session) {
-      throw new Error('Sign-in completed but no session was created. Please try again.');
+      throw new Error('Google sign-in did not finish. Please try again.');
     }
+
+    finishOAuthBrowser();
   } finally {
-    deepLinkWaiter.cancel();
+    oauthWaiter.cancel();
+    finishOAuthBrowser();
     if (Platform.OS === 'android') {
       try {
         await WebBrowser.coolDownAsync();
