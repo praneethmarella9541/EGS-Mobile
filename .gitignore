@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.local
+backend/.env
+
+# Database
+backend/data/
+
+# Expo
+mobile/.expo/
+mobile/dist/
+mobile/expo-env.d.ts
+
+# Build / logs
+*.log
+.DS_Store

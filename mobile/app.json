@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "Sales Attendance",
+    "slug": "sales-attendance",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "salesattendance",
+    "sdkVersion": "54.0.0",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1e3a5f"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.company.salesattendance",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera is used for face recognition attendance",
+        "NSLocationWhenInUseUsageDescription": "Location is used to verify you are at the assigned work location"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1e3a5f"
+      },
+      "package": "com.company.salesattendance",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Sales Attendance to use your camera for face verification"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Sales Attendance to verify your location for attendance"
+        }
+      ],
+      "expo-asset",
+      "expo-font"
+    ]
+  }
+}
