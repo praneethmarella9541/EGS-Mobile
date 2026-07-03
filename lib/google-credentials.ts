@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { callEdge } from './edge';
 
 /**
  * Right after Google OAuth, the session carries a `provider_refresh_token`
@@ -12,7 +13,7 @@ export async function captureGoogleRefreshToken(): Promise<void> {
   const refreshToken = (data.session as any)?.provider_refresh_token as string | undefined;
   if (!refreshToken) return; // nothing new to store (re-login without consent)
   try {
-    await supabase.functions.invoke('google-link', { body: { refresh_token: refreshToken } });
+    await callEdge('google-link', { refresh_token: refreshToken });
   } catch {
     // Non-fatal: form creation will prompt to reconnect Google if missing.
   }

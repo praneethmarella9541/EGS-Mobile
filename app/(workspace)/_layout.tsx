@@ -19,6 +19,8 @@ type Module = {
 
 const MODULES: Module[] = [
   { key: 'assignments', label: 'Assignments', icon: 'clipboard-outline', path: '/(workspace)/assignments', roles: ['admin'] },
+  { key: 'attendance', label: 'Attendance', icon: 'finger-print-outline', path: '/(workspace)/attendance', roles: ['admin'] },
+  { key: 'forms', label: 'Forms', icon: 'document-text-outline', path: '/(workspace)/forms', roles: ['admin'] },
   { key: 'tasks', label: 'My Tasks', icon: 'checkbox-outline', path: '/(workspace)/tasks', roles: ['user'] },
   { key: 'admin', label: 'Team', icon: 'people-outline', path: '/(workspace)/admin', roles: ['admin'] },
 ];

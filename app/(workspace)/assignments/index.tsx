@@ -11,10 +11,14 @@ import {
   TextInput,
   Platform,
   RefreshControl,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { ScreenHeader } from '../../../components/ScreenHeader';
+import { AddressAutocomplete } from '../../../components/AddressAutocomplete';
+import { FormPicker } from '../../../components/FormPicker';
+import { forms as formsApi, type FormListItem } from '../../../lib/forms';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 import {
@@ -27,7 +31,7 @@ import {
 } from '../../../lib/assignments';
 import type { Assignment } from '../../../lib/types';
 
-type Row = { address: string; formUrl: string };
+type Row = { address: string; formUrl: string; formTitle?: string; lat?: number; lng?: number };
 const emptyRow = (): Row => ({ address: '', formUrl: '' });
 
 export default function AssignmentsScreen() {
@@ -42,6 +46,8 @@ export default function AssignmentsScreen() {
   const [formUser, setFormUser] = useState<AssignableUser | null>(null);
   const [rows, setRows] = useState<Row[]>([emptyRow()]);
   const [saving, setSaving] = useState(false);
+  const [pickerRow, setPickerRow] = useState<number | null>(null);
+  const [resolvingRow, setResolvingRow] = useState<number | null>(null);
 
   const dateKey = toDateKey(date);
 
@@ -93,6 +99,43 @@ export default function AssignmentsScreen() {
   function updateRow(i: number, field: keyof Row, value: string) {
     setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
   }
+  // Typing free text invalidates any previously picked coordinates.
+  function setRowAddressText(i: number, text: string) {
+    setRows((prev) =>
+      prev.map((r, idx) => (idx === i ? { ...r, address: text, lat: undefined, lng: undefined } : r))
+    );
+  }
+  function pickRowAddress(i: number, pick: { label: string; lat: number; lng: number }) {
+    setRows((prev) =>
+      prev.map((r, idx) =>
+        idx === i ? { ...r, address: pick.label, lat: pick.lat, lng: pick.lng } : r
+      )
+    );
+  }
+  async function pickRowForm(i: number, form: FormListItem) {
+    setResolvingRow(i);
+    try {
+      const { uri, shareWarning } = await formsApi.responderUri(form.id);
+      setRows((prev) =>
+        prev.map((r, idx) => (idx === i ? { ...r, formUrl: uri, formTitle: form.title } : r))
+      );
+      if (shareWarning) {
+        Alert.alert(
+          'Form may require sign-in',
+          `Could not make "${form.title}" link-shareable, so field users may hit a Google sign-in wall when opening it:\n\n${shareWarning}`
+        );
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Could not load that form’s link');
+    } finally {
+      setResolvingRow(null);
+    }
+  }
+  function clearRowForm(i: number) {
+    setRows((prev) =>
+      prev.map((r, idx) => (idx === i ? { ...r, formUrl: '', formTitle: undefined } : r))
+    );
+  }
   function addRow() {
     setRows((prev) => [...prev, emptyRow()]);
   }
@@ -103,7 +146,7 @@ export default function AssignmentsScreen() {
   async function save() {
     if (!formUser) return;
     const items = rows
-      .map((r) => ({ address: r.address.trim(), formUrl: r.formUrl.trim() }))
+      .map((r) => ({ address: r.address.trim(), formUrl: r.formUrl.trim(), lat: r.lat, lng: r.lng }))
       .filter((r) => r.address || r.formUrl);
     if (items.length === 0) return Alert.alert('Error', 'Add at least one location.');
     const incomplete = items.find((r) => !r.address || !r.formUrl);
@@ -260,7 +303,10 @@ export default function AssignmentsScreen() {
 
       {/* Add-assignment modal */}
       <Modal visible={!!formUser} animationType="slide" transparent onRequestClose={() => setFormUser(null)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
@@ -271,7 +317,11 @@ export default function AssignmentsScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              contentContainerStyle={styles.form}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+            >
               {rows.map((row, i) => (
                 <View key={i} style={styles.rowBlock}>
                   <View style={styles.rowBlockHeader}>
@@ -284,25 +334,47 @@ export default function AssignmentsScreen() {
                   </View>
 
                   <Text style={styles.fieldLabel}>Address</Text>
-                  <TextInput
-                    style={[styles.input, { height: 70, textAlignVertical: 'top' }]}
+                  <AddressAutocomplete
                     value={row.address}
-                    onChangeText={(v) => updateRow(i, 'address', v)}
-                    placeholder="e.g. 12 MG Road, Bengaluru 560001"
-                    placeholderTextColor={Colors.textMuted}
-                    multiline
+                    onChangeText={(v) => setRowAddressText(i, v)}
+                    onSelect={(pick) => pickRowAddress(i, pick)}
+                    placeholder="Search address…"
                   />
+                  {row.lat != null ? (
+                    <Text style={styles.coordOk}>
+                      ✓ Location pinned ({row.lat.toFixed(5)}, {row.lng!.toFixed(5)})
+                    </Text>
+                  ) : (
+                    <Text style={styles.hint}>
+                      Pick a suggestion to pin the exact spot (used for geo-verification).
+                    </Text>
+                  )}
 
-                  <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Google Form link</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={row.formUrl}
-                    onChangeText={(v) => updateRow(i, 'formUrl', v)}
-                    placeholder="https://forms.gle/…"
-                    placeholderTextColor={Colors.textMuted}
-                    autoCapitalize="none"
-                    keyboardType="url"
-                  />
+                  <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Google Form</Text>
+                  {resolvingRow === i ? (
+                    <View style={styles.formPickBtn}>
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                      <Text style={styles.formPickText}>Loading form…</Text>
+                    </View>
+                  ) : row.formUrl ? (
+                    <View style={styles.formChip}>
+                      <Ionicons name="document-text" size={16} color={Colors.primary} />
+                      <Text style={styles.formChipText} numberOfLines={1}>
+                        {row.formTitle || 'Selected form'}
+                      </Text>
+                      <TouchableOpacity onPress={() => setPickerRow(i)} hitSlop={6}>
+                        <Text style={styles.formChipAction}>Change</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => clearRowForm(i)} hitSlop={6}>
+                        <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity style={styles.formPickBtn} onPress={() => setPickerRow(i)}>
+                      <Ionicons name="search" size={16} color={Colors.primary} />
+                      <Text style={styles.formPickText}>Select a form</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               ))}
 
@@ -310,8 +382,6 @@ export default function AssignmentsScreen() {
                 <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
                 <Text style={styles.addRowText}>Add another location</Text>
               </TouchableOpacity>
-
-              <Text style={styles.hint}>Each address is geocoded for geo-verification.</Text>
 
               <TouchableOpacity
                 style={[styles.saveBtn, saving && { opacity: 0.6 }]}
@@ -327,8 +397,16 @@ export default function AssignmentsScreen() {
                 )}
               </TouchableOpacity>
             </ScrollView>
+
+            <FormPicker
+              visible={pickerRow !== null}
+              onClose={() => setPickerRow(null)}
+              onPick={(form) => {
+                if (pickerRow !== null) void pickRowForm(pickerRow, form);
+              }}
+            />
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -461,6 +539,32 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   hint: { fontSize: 12, color: Colors.textMuted },
+  coordOk: { fontSize: 12, color: Colors.success, fontWeight: '600' },
+  formPickBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: Colors.surface,
+  },
+  formPickText: { fontSize: 15, color: Colors.primary, fontWeight: '600' },
+  formChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: Colors.primaryLight,
+  },
+  formChipText: { flex: 1, fontSize: 14, color: Colors.text, fontWeight: '500' },
+  formChipAction: { fontSize: 13, color: Colors.primary, fontWeight: '700' },
   saveBtn: {
     backgroundColor: Colors.primary,
     borderRadius: 12,

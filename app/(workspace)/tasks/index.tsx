@@ -13,7 +13,6 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import * as ImagePicker from 'expo-image-picker';
 import { ScreenHeader } from '../../../components/ScreenHeader';
 import { Colors } from '../../../constants/colors';
 import { listMyAssignments, toDateKey } from '../../../lib/assignments';
@@ -46,34 +45,24 @@ export default function TasksScreen() {
     load();
   }, [load]);
 
-  async function checkIn(task: AssignmentWithStatus) {
-    // 1. Camera permission + capture
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Camera needed', 'Allow camera access to take your attendance photo.');
-      return;
-    }
-    const shot = await ImagePicker.launchCameraAsync({ quality: 0.5, cameraType: ImagePicker.CameraType.front });
-    if (shot.canceled || !shot.assets?.[0]?.uri) return;
-
-    // 2. Geo-verify + upload + record
-    setBusyId(task.id);
-    try {
-      await submitAttendance(task, shot.assets[0].uri);
-      await load();
-      Alert.alert('Checked in', 'Attendance recorded. The form is now unlocked.');
-    } catch (e: any) {
-      Alert.alert('Check-in failed', e?.message ?? 'Please try again.');
-    } finally {
-      setBusyId(null);
-    }
-  }
-
   function openForm(task: AssignmentWithStatus) {
     router.push({
       pathname: '/(workspace)/form-view',
       params: { url: task.form_url, title: task.location_label },
     } as any);
+  }
+
+  async function markAttendance(task: AssignmentWithStatus) {
+    setBusyId(task.id);
+    try {
+      await submitAttendance(task);
+      await load();
+      openForm(task);
+    } catch (e: any) {
+      Alert.alert('Could not mark attendance', e?.message ?? 'Please try again.');
+    } finally {
+      setBusyId(null);
+    }
   }
 
   const prettyDate = date.toLocaleDateString(undefined, {
@@ -138,6 +127,7 @@ export default function TasksScreen() {
             tasks.map((task, i) => {
               const done = !!task.attendance;
               const busy = busyId === task.id;
+              const expired = !done && task.assigned_date !== toDateKey(new Date());
               return (
                 <View key={task.id} style={styles.card}>
                   <View style={styles.cardHeader}>
@@ -162,26 +152,33 @@ export default function TasksScreen() {
                     )}
                   </View>
 
-                  {!done ? (
+                  {expired ? (
+                    <View style={styles.lockedForm}>
+                      <Ionicons name="time-outline" size={14} color={Colors.textMuted} />
+                      <Text style={styles.lockedFormText}>
+                        Expired — this assignment was only valid on {task.assigned_date}
+                      </Text>
+                    </View>
+                  ) : !done ? (
                     <>
                       <TouchableOpacity
                         style={[styles.actionBtn, busy && { opacity: 0.6 }]}
-                        onPress={() => checkIn(task)}
+                        onPress={() => markAttendance(task)}
                         disabled={busy}
                       >
                         {busy ? (
                           <ActivityIndicator color="#fff" />
                         ) : (
                           <>
-                            <Ionicons name="camera-outline" size={18} color="#fff" />
-                            <Text style={styles.actionBtnText}>Photo check-in</Text>
+                            <Ionicons name="location-outline" size={18} color="#fff" />
+                            <Text style={styles.actionBtnText}>Mark attendance</Text>
                           </>
                         )}
                       </TouchableOpacity>
                       <View style={styles.lockedForm}>
                         <Ionicons name="lock-closed" size={14} color={Colors.textMuted} />
                         <Text style={styles.lockedFormText}>
-                          Form unlocks after check-in (within {GEO_RADIUS_M} m)
+                          Form unlocks after marking attendance (within {GEO_RADIUS_M} m)
                         </Text>
                       </View>
                     </>

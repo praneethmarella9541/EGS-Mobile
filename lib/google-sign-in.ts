@@ -15,15 +15,18 @@ import {
 
 export { getMobileOAuthRedirect, isMobileOAuthCallbackUrl, isExpoGo };
 
-// Identity + Google Forms (create/edit), responses (read), and Drive.file
-// (list/manage the forms our app creates). Least-privilege Drive scope.
+// Identity + Google Forms (create/edit), responses (read), and Drive.
+// Full (not readonly/file) Drive scope: we need to list ALL of the admin's
+// existing forms (not just ones this app created) AND change sharing
+// permissions on those forms/linked sheets so field users can open them
+// without a Google sign-in of their own.
 const GOOGLE_SCOPES = [
   'openid',
   'email',
   'profile',
   'https://www.googleapis.com/auth/forms.body',
   'https://www.googleapis.com/auth/forms.responses.readonly',
-  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive',
 ].join(' ');
 
 const OAUTH_WAIT_MS = 60_000;

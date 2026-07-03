@@ -63,12 +63,9 @@ automatically — don't set those.
 
 ## 6. Database + functions
 
-1. Run `supabase/schema.sql` in the SQL editor (idempotent).
-2. Seed the first admin email **before** signing in with Google:
-   ```sql
-   insert into public.admin_emails (email) values ('you@company.com');
-   ```
-3. Deploy the functions:
+1. Run `supabase/schema.sql` in the SQL editor (idempotent). Any Google
+   sign-in becomes an admin automatically — no allowlist to seed.
+2. Deploy the functions:
    ```bash
    supabase functions deploy google-link
    supabase functions deploy admin-users
@@ -78,9 +75,7 @@ automatically — don't set those.
 
 1. Build a dev client (`npx expo run:android` / `run:ios`) — Google deep-link
    sign-in needs a real build (or the Expo Go `exp://` proxy).
-2. Open the app → **Continue with Google (Admin)** with an allowlisted email.
-   - Allowlisted → lands in the workspace as admin.
-   - Not allowlisted → "Access denied" and signed out.
+2. Open the app → **Continue with Google** → lands in the workspace as **admin**.
 3. As admin → **Team** → create an email/password user.
 4. Sign out, sign in as that user with those credentials → you see **My Tasks**.
 

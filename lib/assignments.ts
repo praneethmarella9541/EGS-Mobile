@@ -38,14 +38,19 @@ export async function listAssignmentsForDate(dateKey: string): Promise<Assignmen
   return data ?? [];
 }
 
-/** Create one assignment. Geocodes the address before saving. */
+/** Create one assignment. Uses provided coords, else geocodes the address. */
 export async function createAssignment(input: {
   userId: string;
   dateKey: string;
   address: string;
   formUrl: string;
+  lat?: number;
+  lng?: number;
 }): Promise<Assignment> {
-  const { lat, lng } = await geocodeAddress(input.address);
+  const { lat, lng } =
+    input.lat != null && input.lng != null
+      ? { lat: input.lat, lng: input.lng }
+      : await geocodeAddress(input.address);
   const { data: auth } = await supabase.auth.getUser();
   const { data, error } = await supabase
     .from('assignments')
@@ -68,7 +73,7 @@ export async function createAssignment(input: {
 export async function createAssignments(input: {
   userId: string;
   dateKey: string;
-  items: { address: string; formUrl: string }[];
+  items: { address: string; formUrl: string; lat?: number; lng?: number }[];
 }): Promise<{ created: number; failed: { address: string; error: string }[] }> {
   let created = 0;
   const failed: { address: string; error: string }[] = [];
@@ -79,6 +84,8 @@ export async function createAssignments(input: {
         dateKey: input.dateKey,
         address: item.address,
         formUrl: item.formUrl,
+        lat: item.lat,
+        lng: item.lng,
       });
       created += 1;
     } catch (e: any) {

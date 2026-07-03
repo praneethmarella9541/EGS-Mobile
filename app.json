@@ -18,7 +18,8 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION"
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.RECORD_AUDIO"
       ],
       "intentFilters": [
         {
@@ -61,6 +62,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "dabda90c-7c4f-4454-9177-a45dee37a24d"
+      }
+    },
+    "owner": "dreamerslabs"
   }
 }

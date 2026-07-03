@@ -26,3 +26,11 @@ node_modules/
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+
+# Build artifacts
+*.apk
+*.aab
+*.ipa
+
+# Supabase CLI local cache
+supabase/.temp/

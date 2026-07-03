@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { callEdge } from './edge';
 
 export interface TeamMember {
   id: string;
@@ -10,20 +10,9 @@ export interface TeamMember {
   created_at: string;
 }
 
-/** Invoke the admin-users Edge Function; the user's JWT is attached automatically. */
-async function invoke<T>(body: Record<string, unknown>): Promise<T> {
-  const { data, error } = await supabase.functions.invoke('admin-users', { body });
-  if (error) {
-    // Surface the function's JSON { error } message when present.
-    const ctx = (error as { context?: { body?: unknown } }).context;
-    const msg =
-      (ctx?.body && typeof ctx.body === 'object' && (ctx.body as any).error) || error.message;
-    throw new Error(String(msg));
-  }
-  if (data && typeof data === 'object' && 'error' in data) {
-    throw new Error(String((data as any).error));
-  }
-  return data as T;
+/** Invoke the admin-users Edge Function; the user's JWT is attached by callEdge. */
+function invoke<T>(body: Record<string, unknown>): Promise<T> {
+  return callEdge<T>('admin-users', body);
 }
 
 export const adminUsers = {

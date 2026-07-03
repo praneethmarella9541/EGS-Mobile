@@ -1,6 +1,7 @@
 -- EGS CRM — base auth schema (idempotent: safe to re-run)
 -- Run this in the new Supabase project's SQL editor.
--- TESTING MODE: signup picks the role (admin/user). Google allowlist gate parked.
+-- Auth model: every successful Google sign-in is an ADMIN; admin-created
+-- email/password accounts are USERS. No allowlist.
 
 -- 1. Roles
 do $$ begin
@@ -8,11 +9,8 @@ do $$ begin
 exception when duplicate_object then null;
 end $$;
 
--- 2. Admin allowlist (used later when the Google admin gate is re-enabled).
-create table if not exists public.admin_emails (
-  email      text primary key,
-  created_at timestamptz not null default now()
-);
+-- 2. (Removed) Admin allowlist — any Google sign-in is now an admin.
+drop table if exists public.admin_emails cascade;
 
 -- 3. Profiles (1:1 with auth.users)
 create table if not exists public.profiles (
@@ -27,8 +25,8 @@ create table if not exists public.profiles (
 );
 
 -- 4. Auto-create a profile when a new auth user is created.
---    Google sign-in → admin ONLY if the email is allowlisted (admin_emails).
---    Everyone else (admin-created email/password users) → 'user'.
+--    Google sign-in → 'admin'. Everyone else (admin-created
+--    email/password accounts) → 'user'.
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -36,11 +34,7 @@ security definer set search_path = public
 as $$
 declare
   v_provider text := new.raw_app_meta_data->>'provider';
-  v_is_allowlisted boolean := exists (
-    select 1 from public.admin_emails where lower(email) = lower(new.email)
-  );
-  v_role public.user_role :=
-    case when v_provider = 'google' and v_is_allowlisted then 'admin' else 'user' end;
+  v_role public.user_role := case when v_provider = 'google' then 'admin' else 'user' end;
   v_name text := coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1));
 begin
   insert into public.profiles (id, email, display_name, role)
@@ -68,7 +62,6 @@ $$;
 
 -- 6. Row Level Security
 alter table public.profiles enable row level security;
-alter table public.admin_emails enable row level security;
 
 -- profiles: users read/update self; admins read/update everyone
 drop policy if exists "profiles read self or admin" on public.profiles;
@@ -81,15 +74,14 @@ create policy "profiles update self or admin"
   on public.profiles for update
   using (auth.uid() = id or public.is_admin());
 
--- admin_emails: only admins can see/manage the allowlist
-drop policy if exists "admin_emails admin only" on public.admin_emails;
-create policy "admin_emails admin only"
-  on public.admin_emails for all
-  using (public.is_admin())
-  with check (public.is_admin());
-
--- 7. BOOTSTRAP (only needed later, for the Google admin gate):
---    insert into public.admin_emails (email) values ('you@company.com');
+-- 7. Backfill: promote any existing Google accounts to admin (the trigger only
+--    runs on new signups, so fix rows created before this change).
+update public.profiles p
+set role = 'admin'
+from auth.users u
+where u.id = p.id
+  and u.raw_app_meta_data->>'provider' = 'google'
+  and p.role <> 'admin';
 
 -- ============================================================================
 -- 8. Field attendance: admins assign (date, user, location, form); users check
@@ -114,7 +106,7 @@ create table if not exists public.attendance (
   id            uuid primary key default gen_random_uuid(),
   assignment_id uuid not null unique references public.assignments (id) on delete cascade,
   user_id       uuid not null references auth.users (id) on delete cascade,
-  photo_path    text not null,
+  photo_path    text, -- nullable: photo capture is currently disabled (see FACE_VERIFICATION_ENABLED)
   captured_lat  double precision not null,
   captured_lng  double precision not null,
   distance_m    numeric not null,
@@ -181,3 +173,47 @@ create table if not exists public.google_credentials (
 );
 alter table public.google_credentials enable row level security;
 -- No policies = no anon/authenticated access. Service role bypasses RLS.
+
+-- ============================================================================
+-- 11. Google Forms created in-app. Rows are written by the google-forms Edge
+--     Function (service role) after creating the form via the Forms API.
+-- ============================================================================
+create table if not exists public.forms (
+  id            text primary key,          -- Google form id
+  title         text not null,
+  responder_uri text not null,             -- public fill/submit URL
+  edit_uri      text,                       -- Google Forms editor URL
+  created_by    uuid references auth.users (id) on delete set null,
+  created_at    timestamptz not null default now()
+);
+alter table public.forms enable row level security;
+
+-- Admins read/manage all forms; normal users can read (to open assigned links).
+drop policy if exists "forms read all authed" on public.forms;
+create policy "forms read all authed"
+  on public.forms for select to authenticated
+  using (true);
+
+drop policy if exists "forms admin write" on public.forms;
+create policy "forms admin write"
+  on public.forms for all
+  using (public.is_admin()) with check (public.is_admin());
+
+-- ============================================================================
+-- 12. Face registration + verified attendance. Users register their face once
+--     (two selfies cross-verified for quality, see face-auth Edge Function);
+--     only the embedding is kept, never the photos. Check-ins are then
+--     face-matched against it via the same function.
+-- ============================================================================
+alter table public.profiles add column if not exists face_registered boolean not null default false;
+
+-- Service-role only (edge functions) — same lockdown as google_credentials.
+-- No policies = no anon/authenticated access.
+create table if not exists public.face_embeddings (
+  user_id       uuid primary key references auth.users (id) on delete cascade,
+  embedding     jsonb not null,
+  registered_at timestamptz not null default now()
+);
+alter table public.face_embeddings enable row level security;
+
+alter table public.attendance add column if not exists face_similarity numeric;

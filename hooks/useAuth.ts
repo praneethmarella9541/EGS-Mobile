@@ -12,6 +12,7 @@ interface AuthCtx {
   isAdmin: boolean;
   signOut: () => Promise<void>;
   hasFeature: (feature: string) => boolean;
+  refreshProfile: () => Promise<void>;
 }
 
 export const AuthContext = createContext<AuthCtx>({
@@ -22,6 +23,7 @@ export const AuthContext = createContext<AuthCtx>({
   isAdmin: false,
   signOut: async () => {},
   hasFeature: () => false,
+  refreshProfile: async () => {},
 });
 
 export function useAuth() {
@@ -87,5 +89,9 @@ export function useAuthState(): AuthCtx {
     return !(profile.restricted_features ?? []).includes(feature);
   }
 
-  return { session, user, profile, loading, isAdmin, signOut, hasFeature };
+  async function refreshProfile() {
+    if (user) await fetchProfile(user.id);
+  }
+
+  return { session, user, profile, loading, isAdmin, signOut, hasFeature, refreshProfile };
 }
