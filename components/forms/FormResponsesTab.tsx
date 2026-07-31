@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -19,13 +19,13 @@ import {
 } from '../../lib/form-responses';
 import type { EditorBlock } from '../../lib/google-forms-editor-model';
 import { exportResponsesCsv } from '../../lib/forms-actions';
-import { FormLinkedSheetPreview } from './FormLinkedSheetPreview';
+import { getIncludeVisitContext } from '../../lib/settings';
+import { listVisitsForForm, matchVisitsToResponses, type MatchableVisit } from '../../lib/visit-match';
 import { PieChart } from './PieChart';
 
 type Props = {
   formId: string;
   editorBlocks: EditorBlock[];
-  linkedSheetId: string | null;
   formTitle: string;
   isQuiz: boolean;
 };
@@ -45,14 +45,16 @@ function SummaryBar({ label, count, max }: { label: string; count: number; max: 
   );
 }
 
-export function FormResponsesTab({ formId, editorBlocks, linkedSheetId, formTitle, isQuiz }: Props) {
+export function FormResponsesTab({ formId, editorBlocks, formTitle, isQuiz }: Props) {
   const [responses, setResponses] = useState<FormResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nextPageToken, setNextPageToken] = useState<string | undefined>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [view, setView] = useState<'summary' | 'individual' | 'spreadsheet'>('summary');
+  const [view, setView] = useState<'summary' | 'individual'>('summary');
+  const [showVerified, setShowVerified] = useState(false);
+  const [verifiedVisits, setVerifiedVisits] = useState<MatchableVisit[]>([]);
 
   const load = useCallback(
     async (append = false, pageToken?: string) => {
@@ -78,6 +80,27 @@ export function FormResponsesTab({ formId, editorBlocks, linkedSheetId, formTitl
     void load();
   }, [load]);
 
+  useEffect(() => {
+    getIncludeVisitContext()
+      .then(setShowVerified)
+      .catch(() => setShowVerified(false));
+  }, []);
+
+  useEffect(() => {
+    if (!showVerified) {
+      setVerifiedVisits([]);
+      return;
+    }
+    listVisitsForForm(formId)
+      .then(setVerifiedVisits)
+      .catch(() => setVerifiedVisits([]));
+  }, [formId, showVerified]);
+
+  const verifiedByResponseId = useMemo(
+    () => (showVerified ? matchVisitsToResponses(responses, verifiedVisits) : new Map<string, MatchableVisit>()),
+    [showVerified, responses, verifiedVisits]
+  );
+
   function toggleExpand(id: string) {
     setExpanded((prev) => {
       const s = new Set(prev);
@@ -93,7 +116,10 @@ export function FormResponsesTab({ formId, editorBlocks, linkedSheetId, formTitl
 
   async function handleExportCsv() {
     const safeName = (formTitle.trim() || 'form').replace(/[^\w-]+/g, '_').slice(0, 40);
-    await exportResponsesCsv(`${safeName}-responses.csv`, responsesToCsv(responses, editorBlocks));
+    await exportResponsesCsv(
+      `${safeName}-responses.csv`,
+      responsesToCsv(responses, editorBlocks, showVerified ? verifiedByResponseId : undefined)
+    );
   }
 
   if (loading && responses.length === 0) {
@@ -120,19 +146,17 @@ export function FormResponsesTab({ formId, editorBlocks, linkedSheetId, formTitl
     <View style={styles.wrap}>
       <View style={styles.toolbar}>
         <View style={styles.viewToggle}>
-          {(['summary', 'individual', ...(linkedSheetId ? (['spreadsheet'] as const) : [])] as const).map(
-            (v) => (
-              <TouchableOpacity
-                key={v}
-                style={[styles.viewBtn, view === v && styles.viewBtnActive]}
-                onPress={() => setView(v)}
-              >
-                <Text style={[styles.viewBtnText, view === v && styles.viewBtnTextActive]}>
-                  {v === 'summary' ? 'Summary' : v === 'individual' ? 'Individual' : 'Spreadsheet'}
-                </Text>
-              </TouchableOpacity>
-            )
-          )}
+          {(['summary', 'individual'] as const).map((v) => (
+            <TouchableOpacity
+              key={v}
+              style={[styles.viewBtn, view === v && styles.viewBtnActive]}
+              onPress={() => setView(v)}
+            >
+              <Text style={[styles.viewBtnText, view === v && styles.viewBtnTextActive]}>
+                {v === 'summary' ? 'Summary' : 'Individual'}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
         <View style={styles.toolbarActions}>
           {responses.length > 0 ? (
@@ -144,9 +168,7 @@ export function FormResponsesTab({ formId, editorBlocks, linkedSheetId, formTitl
         </View>
       </View>
 
-      {view === 'spreadsheet' && linkedSheetId ? (
-        <FormLinkedSheetPreview sheetId={linkedSheetId} formTitle={formTitle} />
-      ) : responses.length === 0 ? (
+      {responses.length === 0 ? (
         <View style={styles.emptyBox}>
           <Text style={styles.muted}>No responses yet.</Text>
         </View>
@@ -219,6 +241,12 @@ export function FormResponsesTab({ formId, editorBlocks, linkedSheetId, formTitl
                         </Text>
                         {resp.respondentEmail ? (
                           <Text style={styles.responseEmail} numberOfLines={1}>{resp.respondentEmail}</Text>
+                        ) : null}
+                        {showVerified && verifiedByResponseId.get(resp.responseId) ? (
+                          <Text style={styles.responseVerified} numberOfLines={1}>
+                            ✓ {verifiedByResponseId.get(resp.responseId)!.userLabel} ·{' '}
+                            {verifiedByResponseId.get(resp.responseId)!.placeLabel}
+                          </Text>
                         ) : null}
                         {isQuiz && resp.totalScore != null ? (
                           <Text style={styles.responseScore}>Score: {resp.totalScore}</Text>
@@ -373,6 +401,7 @@ const styles = StyleSheet.create({
   responseBadgeText: { fontSize: 11, fontWeight: '700', color: FormsTheme.purple },
   responseWhen: { fontSize: 13, fontWeight: '600', color: FormsTheme.text },
   responseEmail: { fontSize: 11, color: FormsTheme.textSecondary },
+  responseVerified: { fontSize: 11, fontWeight: '600', color: FormsTheme.purple, marginTop: 2 },
   responseScore: { fontSize: 11, fontWeight: '600', color: FormsTheme.purple },
   answerList: {
     borderTopWidth: StyleSheet.hairlineWidth,

@@ -27,7 +27,15 @@ export async function geocodeAddress(
   return { lat: results[0].latitude, lng: results[0].longitude };
 }
 
-/** Ask for foreground location permission, then read the current position. */
+/**
+ * Ask for foreground location permission, then read the current position.
+ * Rejects fake/mock locations (e.g. a "Fake GPS" app set as the device's
+ * mock location provider via Developer Options) — Android reports this via
+ * `mocked` on the result; there's no legitimate reason a real field visit
+ * would need one, so any mocked reading is treated as a hard failure.
+ * (iOS has no equivalent developer-options toggle, so `mocked` is always
+ * undefined there — spoofing on iOS needs a jailbreak, out of scope here.)
+ */
 export async function getCurrentPosition(): Promise<{ lat: number; lng: number }> {
   const { status } = await Location.requestForegroundPermissionsAsync();
   if (status !== 'granted') {
@@ -36,5 +44,10 @@ export async function getCurrentPosition(): Promise<{ lat: number; lng: number }
   const pos = await Location.getCurrentPositionAsync({
     accuracy: Location.Accuracy.High,
   });
+  if (pos.mocked) {
+    throw new Error(
+      'A fake/mock location app is turned on for this device. Turn off mock location in Developer Options and try again.'
+    );
+  }
   return { lat: pos.coords.latitude, lng: pos.coords.longitude };
 }

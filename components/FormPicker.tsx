@@ -18,14 +18,7 @@ type Props = {
   onPick: (form: FormListItem) => void;
 };
 
-/**
- * Searchable list of the admin's Google Forms — pick one to assign.
- *
- * Renders as a plain absolutely-positioned overlay rather than a native
- * <Modal>: this is opened from inside the assignment <Modal>, and RN can't
- * present a second native Modal while one is already presenting (it fails
- * silently, especially in Expo Go) — so it must stay in the same window.
- */
+/** Searchable list of the admin's Google Forms — pick one to assign. */
 export function FormPicker({ visible, onClose, onPick }: Props) {
   const [items, setItems] = useState<FormListItem[]>([]);
   const [loading, setLoading] = useState(false);

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -10,29 +10,31 @@ import {
   Platform,
   RefreshControl,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { format } from 'date-fns';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { ScreenHeader } from '../../../components/ScreenHeader';
 import { Colors } from '../../../constants/colors';
 import { listMyAssignments, toDateKey } from '../../../lib/assignments';
-import { submitAttendance } from '../../../lib/attendance';
-import { GEO_RADIUS_M, type AssignmentWithStatus } from '../../../lib/types';
+import { resolveAssignmentForm } from '../../../lib/settings';
+import { verifyStillNearVisit } from '../../../lib/visits';
+import type { AssignmentWithVisits, LocationVisit } from '../../../lib/types';
 
 export default function TasksScreen() {
   const router = useRouter();
   const [date, setDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
-  const [tasks, setTasks] = useState<AssignmentWithStatus[]>([]);
+  const [areas, setAreas] = useState<AssignmentWithVisits[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyVisitId, setBusyVisitId] = useState<string | null>(null);
 
   const dateKey = toDateKey(date);
 
   const load = useCallback(async () => {
     try {
-      setTasks(await listMyAssignments(dateKey));
+      setAreas(await listMyAssignments(dateKey));
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'Failed to load tasks');
     } finally {
@@ -41,27 +43,55 @@ export default function TasksScreen() {
     }
   }, [dateKey]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Fires on mount, whenever `load` changes (i.e. the date changed), AND on
+  // returning from adding/editing a visit — covers date changes and stale
+  // data in one place. A separate plain useEffect(load) here would double up
+  // with this on every date change (useFocusEffect also re-fires when its
+  // callback ref changes while already focused, not just on nav focus).
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
-  function openForm(task: AssignmentWithStatus) {
+  function addVisit(area: AssignmentWithVisits) {
     router.push({
-      pathname: '/(workspace)/form-view',
-      params: { url: task.form_url, title: task.location_label },
+      pathname: '/(workspace)/visit-new',
+      params: {
+        assignmentId: area.id,
+        areaLabel: area.area_label,
+        assignedDate: area.assigned_date,
+        formId: area.form_id ?? '',
+        formUrl: area.form_url ?? '',
+      },
     } as any);
   }
 
-  async function markAttendance(task: AssignmentWithStatus) {
-    setBusyId(task.id);
+  function editVisit(visit: LocationVisit) {
+    router.push({
+      pathname: '/(workspace)/visit-edit',
+      params: { visitId: visit.id },
+    } as any);
+  }
+
+  /** Re-verifies GPS against where the visit was logged before reopening the form. */
+  async function reopenForm(visit: LocationVisit, area: AssignmentWithVisits) {
+    setBusyVisitId(visit.id);
     try {
-      await submitAttendance(task);
-      await load();
-      openForm(task);
+      await verifyStillNearVisit(visit);
+      const field = await resolveAssignmentForm(area);
+      if (!field) {
+        Alert.alert('No form set', 'Ask your admin to set a field form in the Forms tab.');
+        return;
+      }
+      router.push({
+        pathname: '/(workspace)/form-view',
+        params: { url: field.url, title: visit.place_label },
+      } as any);
     } catch (e: any) {
-      Alert.alert('Could not mark attendance', e?.message ?? 'Please try again.');
+      Alert.alert('Could not open form', e?.message ?? 'Please try again.');
     } finally {
-      setBusyId(null);
+      setBusyVisitId(null);
     }
   }
 
@@ -71,19 +101,20 @@ export default function TasksScreen() {
     month: 'short',
     year: 'numeric',
   });
-  const isToday = toDateKey(new Date()) === dateKey;
+  const todayKey = toDateKey(new Date());
+  const isToday = todayKey === dateKey;
 
   return (
     <View style={styles.container}>
       <ScreenHeader title="My Tasks" />
 
-      <TouchableOpacity style={styles.dateBar} onPress={() => setShowPicker(true)} activeOpacity={0.8}>
+      <TouchableOpacity style={styles.dateBar} onPress={() => setShowPicker((v) => !v)} activeOpacity={0.8}>
         <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
         <Text style={styles.dateText}>
           {prettyDate}
           {isToday ? '  · Today' : ''}
         </Text>
-        <Ionicons name="chevron-down" size={18} color={Colors.textMuted} />
+        <Ionicons name={showPicker ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textMuted} />
       </TouchableOpacity>
       {showPicker && (
         <DateTimePicker
@@ -91,7 +122,7 @@ export default function TasksScreen() {
           mode="date"
           display={Platform.OS === 'ios' ? 'inline' : 'default'}
           onChange={(_e, selected) => {
-            setShowPicker(Platform.OS === 'ios');
+            setShowPicker(false);
             if (selected) {
               setLoading(true);
               setDate(selected);
@@ -118,74 +149,87 @@ export default function TasksScreen() {
             />
           }
         >
-          {tasks.length === 0 ? (
+          {areas.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="checkmark-done-outline" size={30} color={Colors.textMuted} />
-              <Text style={styles.emptyText}>No tasks assigned for this date.</Text>
+              <Text style={styles.emptyText}>No areas assigned for this date.</Text>
             </View>
           ) : (
-            tasks.map((task, i) => {
-              const done = !!task.attendance;
-              const busy = busyId === task.id;
-              const expired = !done && task.assigned_date !== toDateKey(new Date());
+            areas.map((area, i) => {
+              const expired = area.assigned_date !== todayKey;
               return (
-                <View key={task.id} style={styles.card}>
+                <View key={area.id} style={styles.card}>
                   <View style={styles.cardHeader}>
                     <Text style={styles.cardNum}>{i + 1}</Text>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.location}>{task.location_label}</Text>
-                      {done && (
-                        <Text style={styles.verified}>
-                          ✓ Checked in · {task.attendance!.distance_m} m away
-                        </Text>
-                      )}
+                      <Text style={styles.location}>{area.area_label}</Text>
+                      <Text style={styles.visitCount}>
+                        {area.visits.length === 0
+                          ? 'No locations logged yet'
+                          : `${area.visits.length} location${area.visits.length === 1 ? '' : 's'} logged`}
+                      </Text>
                     </View>
-                    {done ? (
-                      <View style={styles.badgeDone}>
-                        <Ionicons name="checkmark-circle" size={16} color={Colors.success} />
-                        <Text style={styles.badgeDoneText}>Done</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.badgePending}>
-                        <Text style={styles.badgePendingText}>Pending</Text>
-                      </View>
-                    )}
                   </View>
+
+                  {area.visits.map((v) => {
+                    const busy = busyVisitId === v.id;
+                    return (
+                      <View key={v.id} style={styles.visitBlock}>
+                        <View style={styles.visitRow}>
+                          <Ionicons name="location" size={14} color={Colors.primary} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.visitPlace} numberOfLines={1}>
+                              {v.place_label}
+                            </Text>
+                            {v.notes ? (
+                              <Text style={styles.visitNotes} numberOfLines={1}>
+                                {v.notes}
+                              </Text>
+                            ) : null}
+                          </View>
+                          {v.photos.length > 0 && (
+                            <View style={styles.photoBadge}>
+                              <Ionicons name="image-outline" size={12} color={Colors.textSecondary} />
+                              <Text style={styles.photoBadgeText}>{v.photos.length}</Text>
+                            </View>
+                          )}
+                          <Text style={styles.visitTime}>{format(new Date(v.submitted_at), 'h:mm a')}</Text>
+                        </View>
+                        <View style={styles.visitActions}>
+                          <TouchableOpacity style={styles.visitActionBtn} onPress={() => editVisit(v)}>
+                            <Ionicons name="pencil-outline" size={14} color={Colors.primary} />
+                            <Text style={styles.visitActionText}>Edit</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.visitActionBtn}
+                            onPress={() => reopenForm(v, area)}
+                            disabled={busy}
+                          >
+                            {busy ? (
+                              <ActivityIndicator size="small" color={Colors.primary} />
+                            ) : (
+                              <>
+                                <Ionicons name="document-text-outline" size={14} color={Colors.primary} />
+                                <Text style={styles.visitActionText}>Open form</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    );
+                  })}
 
                   {expired ? (
                     <View style={styles.lockedForm}>
                       <Ionicons name="time-outline" size={14} color={Colors.textMuted} />
                       <Text style={styles.lockedFormText}>
-                        Expired — this assignment was only valid on {task.assigned_date}
+                        Expired — this area was only assigned on {area.assigned_date}
                       </Text>
                     </View>
-                  ) : !done ? (
-                    <>
-                      <TouchableOpacity
-                        style={[styles.actionBtn, busy && { opacity: 0.6 }]}
-                        onPress={() => markAttendance(task)}
-                        disabled={busy}
-                      >
-                        {busy ? (
-                          <ActivityIndicator color="#fff" />
-                        ) : (
-                          <>
-                            <Ionicons name="location-outline" size={18} color="#fff" />
-                            <Text style={styles.actionBtnText}>Mark attendance</Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
-                      <View style={styles.lockedForm}>
-                        <Ionicons name="lock-closed" size={14} color={Colors.textMuted} />
-                        <Text style={styles.lockedFormText}>
-                          Form unlocks after marking attendance (within {GEO_RADIUS_M} m)
-                        </Text>
-                      </View>
-                    </>
                   ) : (
-                    <TouchableOpacity style={styles.formBtn} onPress={() => openForm(task)}>
-                      <Ionicons name="document-text-outline" size={18} color={Colors.primary} />
-                      <Text style={styles.formBtnText}>Open & fill form</Text>
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => addVisit(area)}>
+                      <Ionicons name="add-circle-outline" size={18} color="#fff" />
+                      <Text style={styles.actionBtnText}>Add location visit</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -239,16 +283,43 @@ const styles = StyleSheet.create({
     lineHeight: 26,
   },
   location: { fontSize: 15, fontWeight: '600', color: Colors.text, lineHeight: 20 },
-  verified: { fontSize: 12, color: Colors.success, marginTop: 4 },
-  badgeDone: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  badgeDoneText: { fontSize: 12, fontWeight: '600', color: Colors.success },
-  badgePending: {
-    backgroundColor: '#FEF3C7',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+  visitCount: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  visitBlock: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.border,
+    paddingTop: 8,
+    gap: 6,
   },
-  badgePendingText: { fontSize: 11, fontWeight: '700', color: Colors.warning },
+  visitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  visitPlace: { fontSize: 13, fontWeight: '500', color: Colors.text },
+  visitNotes: { fontSize: 12, color: Colors.textMuted, marginTop: 1 },
+  visitTime: { fontSize: 11, color: Colors.textMuted },
+  visitActions: { flexDirection: 'row', gap: 8, paddingLeft: 22 },
+  visitActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  visitActionText: { fontSize: 12, fontWeight: '600', color: Colors.primary },
+  photoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: Colors.background,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  photoBadgeText: { fontSize: 11, color: Colors.textSecondary, fontWeight: '600' },
   actionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -261,15 +332,4 @@ const styles = StyleSheet.create({
   actionBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   lockedForm: { flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center' },
   lockedFormText: { fontSize: 12, color: Colors.textMuted },
-  formBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
-    borderRadius: 11,
-    paddingVertical: 12,
-  },
-  formBtnText: { color: Colors.primary, fontSize: 15, fontWeight: '700' },
 });

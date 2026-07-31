@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,9 @@ import {
   Modal,
   TextInput,
   RefreshControl,
+  Platform,
+  KeyboardAvoidingView,
+  Switch,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,6 +22,7 @@ import { ScreenHeader } from '../../../components/ScreenHeader';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 import { forms, type FormListItem } from '../../../lib/forms';
+import { getFieldForm, setFieldForm, getIncludeVisitContext, setIncludeVisitContext } from '../../../lib/settings';
 
 export default function FormsScreen() {
   const router = useRouter();
@@ -29,10 +33,21 @@ export default function FormsScreen() {
   const [showCreate, setShowCreate] = useState(false);
   const [title, setTitle] = useState('');
   const [creating, setCreating] = useState(false);
+  const [fieldFormId, setFieldFormId] = useState<string | null>(null);
+  const [settingId, setSettingId] = useState<string | null>(null);
+  const [includeContext, setIncludeContextState] = useState(false);
+  const [contextToggling, setContextToggling] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setItems(await forms.list());
+      const [list, fieldForm, includeVisitContext] = await Promise.all([
+        forms.list(),
+        getFieldForm(),
+        getIncludeVisitContext(),
+      ]);
+      setItems(list);
+      setFieldFormId(fieldForm?.id ?? null);
+      setIncludeContextState(includeVisitContext);
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'Failed to load forms');
     } finally {
@@ -41,11 +56,10 @@ export default function FormsScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // Refresh when returning from the editor (title may have changed).
+  // Fires on mount AND when returning from the editor (title may have
+  // changed). A separate plain useEffect(load) here would double up on mount
+  // (useFocusEffect already fires then too) — that duplicate call raced the
+  // context-question provisioning below and created each question twice.
   useFocusEffect(
     useCallback(() => {
       load();
@@ -68,10 +82,13 @@ export default function FormsScreen() {
     if (!title.trim()) return Alert.alert('Error', 'Enter a form title.');
     setCreating(true);
     try {
-      const { form } = await forms.create(title.trim());
+      const { form, titleWarning } = await forms.create(title.trim());
       setShowCreate(false);
       setTitle('');
       await load();
+      if (titleWarning) {
+        Alert.alert('Title may not show correctly', `Google rejected setting the Drive file name: ${titleWarning}`);
+      }
       // jump straight into the editor
       router.push(`/(workspace)/forms/${form.id}/edit` as any);
     } catch (e: any) {
@@ -100,6 +117,39 @@ export default function FormsScreen() {
       }
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'Could not get link');
+    }
+  }
+
+  async function makeFieldForm(form: FormListItem) {
+    setSettingId(form.id);
+    try {
+      const { uri, shareWarning } = await forms.responderUri(form.id);
+      if (!uri) throw new Error('No responder link found.');
+      await setFieldForm(form.id, uri);
+      setFieldFormId(form.id);
+      if (shareWarning) {
+        Alert.alert(
+          'Set, but may need sign-in',
+          `"${form.title}" is now the field form. Google would not make it sign-in-free: ${shareWarning}`
+        );
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Could not set as field form');
+    } finally {
+      setSettingId(null);
+    }
+  }
+
+  async function toggleIncludeContext(value: boolean) {
+    setContextToggling(true);
+    setIncludeContextState(value);
+    try {
+      await setIncludeVisitContext(value);
+    } catch (e: any) {
+      setIncludeContextState(!value);
+      Alert.alert('Error', e?.message ?? 'Could not update setting');
+    } finally {
+      setContextToggling(false);
     }
   }
 
@@ -137,7 +187,27 @@ export default function FormsScreen() {
           <ActivityIndicator color={Colors.primary} />
         </View>
       ) : (
-        <FlatList
+        <>
+          <View style={styles.contextRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.contextTitle}>Verified visit details</Text>
+              <Text style={styles.contextSub}>
+                Shows who, which location, and when — from the app's own records, not editable in the
+                form — alongside each response.
+              </Text>
+            </View>
+            {contextToggling ? (
+              <ActivityIndicator color={Colors.primary} />
+            ) : (
+              <Switch
+                value={includeContext}
+                onValueChange={toggleIncludeContext}
+                trackColor={{ false: Colors.border, true: Colors.primaryLight }}
+                thumbColor={includeContext ? Colors.primary : undefined}
+              />
+            )}
+          </View>
+          <FlatList
           data={items}
           keyExtractor={(f) => f.id}
           contentContainerStyle={styles.list}
@@ -164,9 +234,16 @@ export default function FormsScreen() {
                   <Ionicons name="document-text" size={20} color={Colors.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.formTitle} numberOfLines={1}>
-                    {item.title}
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={styles.formTitle} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                    {fieldFormId === item.id ? (
+                      <View style={styles.fieldFormBadge}>
+                        <Text style={styles.fieldFormBadgeText}>FIELD FORM</Text>
+                      </View>
+                    ) : null}
+                  </View>
                   <Text style={styles.formSub}>
                     {item.modifiedTime
                       ? `Edited ${format(new Date(item.modifiedTime), 'MMM d, yyyy')}`
@@ -175,25 +252,40 @@ export default function FormsScreen() {
                 </View>
               </TouchableOpacity>
               <View style={styles.actions}>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => copyLink(item)}>
-                  <Ionicons name="link-outline" size={18} color={Colors.textSecondary} />
-                  <Text style={styles.actionText}>Copy link</Text>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => makeFieldForm(item)}
+                  disabled={settingId === item.id || fieldFormId === item.id}
+                  accessibilityLabel={fieldFormId === item.id ? 'Field form' : 'Set as field form'}
+                >
+                  {settingId === item.id ? (
+                    <ActivityIndicator size="small" color={Colors.primary} />
+                  ) : (
+                    <Ionicons
+                      name={fieldFormId === item.id ? 'star' : 'star-outline'}
+                      size={20}
+                      color={fieldFormId === item.id ? Colors.primary : Colors.textSecondary}
+                    />
+                  )}
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => openEditor(item)}>
-                  <Ionicons name="create-outline" size={18} color={Colors.textSecondary} />
-                  <Text style={styles.actionText}>Edit</Text>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => copyLink(item)} accessibilityLabel="Copy link">
+                  <Ionicons name="link-outline" size={20} color={Colors.textSecondary} />
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.actionBtn} onPress={() => confirmDelete(item)}>
-                  <Ionicons name="trash-outline" size={18} color={Colors.error} />
+                <TouchableOpacity style={styles.actionBtn} onPress={() => openEditor(item)} accessibilityLabel="Edit">
+                  <Ionicons name="create-outline" size={20} color={Colors.textSecondary} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => confirmDelete(item)} accessibilityLabel="Delete">
+                  <Ionicons name="trash-outline" size={20} color={Colors.error} />
                 </TouchableOpacity>
               </View>
             </View>
           )}
-        />
+          />
+        </>
       )}
 
       <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>New form</Text>
             <TextInput
@@ -213,7 +305,7 @@ export default function FormsScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -225,6 +317,20 @@ const styles = StyleSheet.create({
   locked: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
   lockedTitle: { fontSize: 17, fontWeight: '700', color: Colors.text },
   list: { padding: 16, gap: 12 },
+  contextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: 16,
+    marginTop: 14,
+    padding: 14,
+    backgroundColor: Colors.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  contextTitle: { fontSize: 14, fontWeight: '600', color: Colors.text },
+  contextSub: { fontSize: 12, color: Colors.textMuted, marginTop: 2 },
   empty: { alignItems: 'center', gap: 8, paddingTop: 60 },
   emptyText: { fontSize: 14, color: Colors.textSecondary },
   card: {
@@ -243,8 +349,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  formTitle: { fontSize: 15, fontWeight: '600', color: Colors.text },
+  formTitle: { fontSize: 15, fontWeight: '600', color: Colors.text, flexShrink: 1 },
   formSub: { fontSize: 12, color: Colors.textMuted, marginTop: 2 },
+  fieldFormBadge: {
+    backgroundColor: Colors.primaryLight,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  fieldFormBadgeText: { fontSize: 9, fontWeight: '700', color: Colors.primary, letterSpacing: 0.4 },
   actions: {
     flexDirection: 'row',
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -252,13 +365,10 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     flex: 1,
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 11,
+    paddingVertical: 13,
   },
-  actionText: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500' },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',

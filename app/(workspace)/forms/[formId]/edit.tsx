@@ -79,9 +79,9 @@ export default function FormEditScreen() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shareWarning, setShareWarning] = useState<string | null>(null);
+  const [titleWarning, setTitleWarning] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>(() => emptyEditorState());
   const [responderUri, setResponderUri] = useState<string | null>(null);
-  const [linkedSheetId, setLinkedSheetId] = useState<string | null>(null);
   const [emailOpen, setEmailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [tab, setTab] = useState<EditorTab>('questions');
@@ -98,12 +98,15 @@ export default function FormEditScreen() {
     setLoading(true);
     setError(null);
     setShareWarning(null);
+    setTitleWarning(null);
     try {
-      const { form: data, shareWarning: warning } = await formsApi.getWithShareStatus(formId);
+      const { form: data, shareWarning: warning, titleWarning: titleWarn } = await formsApi.getWithShareStatus(
+        formId
+      );
       setEditor(googleFormToEditorState(data));
       setResponderUri(typeof data.responderUri === 'string' ? (data.responderUri as string) : null);
-      setLinkedSheetId(typeof data.linkedSheetId === 'string' ? (data.linkedSheetId as string) : null);
       setShareWarning(warning);
+      setTitleWarning(titleWarn);
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load form');
     } finally {
@@ -126,9 +129,6 @@ export default function FormEditScreen() {
       }
       if (res.form && typeof res.form.responderUri === 'string') {
         setResponderUri(res.form.responderUri as string);
-      }
-      if (res.form && typeof res.form.linkedSheetId === 'string') {
-        setLinkedSheetId(res.form.linkedSheetId as string);
       }
       Alert.alert('Saved', res.noChanges ? 'No changes to save.' : 'Form saved to Google.');
     } catch (e: any) {
@@ -264,11 +264,19 @@ export default function FormEditScreen() {
           </View>
         ) : null}
 
+        {titleWarning ? (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>
+              Could not fix this form's Drive file name (it'll keep showing as "Untitled form" in Google
+              Forms/Drive): {titleWarning}
+            </Text>
+          </View>
+        ) : null}
+
         {tab === 'responses' ? (
           <FormResponsesTab
             formId={formId}
             editorBlocks={editor.blocks}
-            linkedSheetId={linkedSheetId}
             formTitle={editor.title}
             isQuiz={editor.isQuiz}
           />

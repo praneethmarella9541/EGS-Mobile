@@ -25,13 +25,19 @@ export const formsApi = {
     return form;
   },
 
-  /** Like get(), but also surfaces whether Google refused to make the file link-shareable. */
-  async getWithShareStatus(formId: string): Promise<{ form: GoogleForm; shareWarning: string | null }> {
-    const { form, shareWarning } = await callEdge<{ form: GoogleForm; shareWarning?: string | null }>(
-      'google-forms',
-      { action: 'get', formId }
-    );
-    return { form, shareWarning: shareWarning ?? null };
+  /**
+   * Like get(), but also surfaces whether Google refused to make the file
+   * link-shareable, or refused to fix the Drive filename (documentTitle).
+   */
+  async getWithShareStatus(
+    formId: string
+  ): Promise<{ form: GoogleForm; shareWarning: string | null; titleWarning: string | null }> {
+    const { form, shareWarning, titleWarning } = await callEdge<{
+      form: GoogleForm;
+      shareWarning?: string | null;
+      titleWarning?: string | null;
+    }>('google-forms', { action: 'get', formId });
+    return { form, shareWarning: shareWarning ?? null, titleWarning: titleWarning ?? null };
   },
 
   async save(formId: string, state: EditorState): Promise<SaveResult> {

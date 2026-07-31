@@ -11,6 +11,8 @@ import {
   Modal,
   TextInput,
   ScrollView,
+  Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ScreenHeader } from '../../../components/ScreenHeader';
@@ -193,7 +195,7 @@ export default function AdminScreen() {
       )}
 
       <Modal visible={showForm} animationType="slide" transparent onRequestClose={() => setShowForm(false)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{editing ? 'Edit user' : 'New user'}</Text>
@@ -259,7 +261,7 @@ export default function AdminScreen() {
               </TouchableOpacity>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

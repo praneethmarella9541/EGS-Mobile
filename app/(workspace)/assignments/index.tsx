@@ -16,9 +16,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { ScreenHeader } from '../../../components/ScreenHeader';
-import { AddressAutocomplete } from '../../../components/AddressAutocomplete';
 import { FormPicker } from '../../../components/FormPicker';
-import { forms as formsApi, type FormListItem } from '../../../lib/forms';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 import {
@@ -29,10 +27,11 @@ import {
   toDateKey,
   type AssignableUser,
 } from '../../../lib/assignments';
+import { forms as formsApi, type FormListItem } from '../../../lib/forms';
 import type { Assignment } from '../../../lib/types';
 
-type Row = { address: string; formUrl: string; formTitle?: string; lat?: number; lng?: number };
-const emptyRow = (): Row => ({ address: '', formUrl: '' });
+type AreaRow = { areaLabel: string; form: { id: string; title: string; url: string } | null };
+const emptyAreaRow = (): AreaRow => ({ areaLabel: '', form: null });
 
 export default function AssignmentsScreen() {
   const { isAdmin } = useAuth();
@@ -44,10 +43,10 @@ export default function AssignmentsScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [formUser, setFormUser] = useState<AssignableUser | null>(null);
-  const [rows, setRows] = useState<Row[]>([emptyRow()]);
+  const [areas, setAreas] = useState<AreaRow[]>([emptyAreaRow()]);
   const [saving, setSaving] = useState(false);
-  const [pickerRow, setPickerRow] = useState<number | null>(null);
-  const [resolvingRow, setResolvingRow] = useState<number | null>(null);
+  const [formPickerRow, setFormPickerRow] = useState<number | null>(null);
+  const [resolvingFormRow, setResolvingFormRow] = useState<number | null>(null);
 
   const dateKey = toDateKey(date);
 
@@ -93,72 +92,46 @@ export default function AssignmentsScreen() {
 
   function openAdd(user: AssignableUser) {
     setFormUser(user);
-    setRows([emptyRow()]);
+    setAreas([emptyAreaRow()]);
   }
 
-  function updateRow(i: number, field: keyof Row, value: string) {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
+  function updateArea(i: number, text: string) {
+    setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, areaLabel: text } : a)));
   }
-  // Typing free text invalidates any previously picked coordinates.
-  function setRowAddressText(i: number, text: string) {
-    setRows((prev) =>
-      prev.map((r, idx) => (idx === i ? { ...r, address: text, lat: undefined, lng: undefined } : r))
-    );
+  function addArea() {
+    setAreas((prev) => [...prev, emptyAreaRow()]);
   }
-  function pickRowAddress(i: number, pick: { label: string; lat: number; lng: number }) {
-    setRows((prev) =>
-      prev.map((r, idx) =>
-        idx === i ? { ...r, address: pick.label, lat: pick.lat, lng: pick.lng } : r
-      )
-    );
+  function removeArea(i: number) {
+    setAreas((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
   }
-  async function pickRowForm(i: number, form: FormListItem) {
-    setResolvingRow(i);
+
+  async function pickAreaForm(i: number, form: FormListItem) {
+    setResolvingFormRow(i);
     try {
-      const { uri, shareWarning } = await formsApi.responderUri(form.id);
-      setRows((prev) =>
-        prev.map((r, idx) => (idx === i ? { ...r, formUrl: uri, formTitle: form.title } : r))
+      const { uri } = await formsApi.responderUri(form.id);
+      setAreas((prev) =>
+        prev.map((a, idx) => (idx === i ? { ...a, form: { id: form.id, title: form.title, url: uri } } : a))
       );
-      if (shareWarning) {
-        Alert.alert(
-          'Form may require sign-in',
-          `Could not make "${form.title}" link-shareable, so field users may hit a Google sign-in wall when opening it:\n\n${shareWarning}`
-        );
-      }
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'Could not load that form’s link');
     } finally {
-      setResolvingRow(null);
+      setResolvingFormRow(null);
     }
   }
-  function clearRowForm(i: number) {
-    setRows((prev) =>
-      prev.map((r, idx) => (idx === i ? { ...r, formUrl: '', formTitle: undefined } : r))
-    );
-  }
-  function addRow() {
-    setRows((prev) => [...prev, emptyRow()]);
-  }
-  function removeRow(i: number) {
-    setRows((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
+  function clearAreaForm(i: number) {
+    setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, form: null } : a)));
   }
 
   async function save() {
     if (!formUser) return;
-    const items = rows
-      .map((r) => ({ address: r.address.trim(), formUrl: r.formUrl.trim(), lat: r.lat, lng: r.lng }))
-      .filter((r) => r.address || r.formUrl);
-    if (items.length === 0) return Alert.alert('Error', 'Add at least one location.');
-    const incomplete = items.find((r) => !r.address || !r.formUrl);
-    if (incomplete) {
-      return Alert.alert('Error', 'Each location needs both an address and a form link.');
-    }
+    const items = areas.filter((a) => a.areaLabel.trim());
+    if (items.length === 0) return Alert.alert('Error', 'Add at least one area.');
     setSaving(true);
     try {
       const { created, failed } = await createAssignments({
         userId: formUser.id,
         dateKey,
-        items,
+        items: items.map((a) => ({ areaLabel: a.areaLabel, form: a.form })),
       });
       setFormUser(null);
       await load();
@@ -166,7 +139,7 @@ export default function AssignmentsScreen() {
         Alert.alert(
           created ? 'Partly saved' : 'Could not save',
           `${created} added.\nFailed:\n` +
-            failed.map((f) => `• ${f.address || '(blank)'} — ${f.error}`).join('\n')
+            failed.map((f) => `• ${f.areaLabel || '(blank)'} — ${f.error}`).join('\n')
         );
       }
     } catch (e: any) {
@@ -177,7 +150,7 @@ export default function AssignmentsScreen() {
   }
 
   function confirmDelete(a: Assignment) {
-    Alert.alert('Remove assignment', a.location_label, [
+    Alert.alert('Remove assignment', a.area_label, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Remove',
@@ -206,10 +179,10 @@ export default function AssignmentsScreen() {
       <ScreenHeader title="Assignments" />
 
       {/* Date picker */}
-      <TouchableOpacity style={styles.dateBar} onPress={() => setShowPicker(true)} activeOpacity={0.8}>
+      <TouchableOpacity style={styles.dateBar} onPress={() => setShowPicker((v) => !v)} activeOpacity={0.8}>
         <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
         <Text style={styles.dateText}>{prettyDate}</Text>
-        <Ionicons name="chevron-down" size={18} color={Colors.textMuted} />
+        <Ionicons name={showPicker ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textMuted} />
       </TouchableOpacity>
       {showPicker && (
         <DateTimePicker
@@ -217,7 +190,7 @@ export default function AssignmentsScreen() {
           mode="date"
           display={Platform.OS === 'ios' ? 'inline' : 'default'}
           onChange={(_e, selected) => {
-            setShowPicker(Platform.OS === 'ios');
+            setShowPicker(false);
             if (selected) {
               setLoading(true);
               setDate(selected);
@@ -276,17 +249,14 @@ export default function AssignmentsScreen() {
                 </View>
 
                 {items.length === 0 ? (
-                  <Text style={styles.noItems}>No locations assigned for this date.</Text>
+                  <Text style={styles.noItems}>No areas assigned for this date.</Text>
                 ) : (
                   items.map((a, i) => (
                     <View key={a.id} style={styles.assignRow}>
                       <Text style={styles.assignNum}>{i + 1}.</Text>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.assignLoc} numberOfLines={2}>
-                          {a.location_label}
-                        </Text>
-                        <Text style={styles.assignForm} numberOfLines={1}>
-                          {a.form_url}
+                        <Text style={styles.assignArea} numberOfLines={2}>
+                          {a.area_label}
                         </Text>
                       </View>
                       <TouchableOpacity onPress={() => confirmDelete(a)} hitSlop={8}>
@@ -322,65 +292,58 @@ export default function AssignmentsScreen() {
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="on-drag"
             >
-              {rows.map((row, i) => (
+              {areas.map((area, i) => (
                 <View key={i} style={styles.rowBlock}>
                   <View style={styles.rowBlockHeader}>
-                    <Text style={styles.rowBlockTitle}>Location {i + 1}</Text>
-                    {rows.length > 1 && (
-                      <TouchableOpacity onPress={() => removeRow(i)} hitSlop={8}>
+                    <Text style={styles.rowBlockTitle}>Area {i + 1}</Text>
+                    {areas.length > 1 && (
+                      <TouchableOpacity onPress={() => removeArea(i)} hitSlop={8}>
                         <Ionicons name="close-circle" size={20} color={Colors.textMuted} />
                       </TouchableOpacity>
                     )}
                   </View>
 
-                  <Text style={styles.fieldLabel}>Address</Text>
-                  <AddressAutocomplete
-                    value={row.address}
-                    onChangeText={(v) => setRowAddressText(i, v)}
-                    onSelect={(pick) => pickRowAddress(i, pick)}
-                    placeholder="Search address…"
+                  <TextInput
+                    style={styles.input}
+                    value={area.areaLabel}
+                    onChangeText={(v) => updateArea(i, v)}
+                    placeholder="e.g. Sector 4-7, Gurgaon"
+                    placeholderTextColor={Colors.textMuted}
                   />
-                  {row.lat != null ? (
-                    <Text style={styles.coordOk}>
-                      ✓ Location pinned ({row.lat.toFixed(5)}, {row.lng!.toFixed(5)})
-                    </Text>
-                  ) : (
-                    <Text style={styles.hint}>
-                      Pick a suggestion to pin the exact spot (used for geo-verification).
-                    </Text>
-                  )}
+                  <Text style={styles.hint}>
+                    The user will pick their exact place(s) within this area when they check in.
+                  </Text>
 
-                  <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Google Form</Text>
-                  {resolvingRow === i ? (
+                  {resolvingFormRow === i ? (
                     <View style={styles.formPickBtn}>
                       <ActivityIndicator size="small" color={Colors.primary} />
                       <Text style={styles.formPickText}>Loading form…</Text>
                     </View>
-                  ) : row.formUrl ? (
+                  ) : area.form ? (
                     <View style={styles.formChip}>
                       <Ionicons name="document-text" size={16} color={Colors.primary} />
                       <Text style={styles.formChipText} numberOfLines={1}>
-                        {row.formTitle || 'Selected form'}
+                        {area.form.title}
                       </Text>
-                      <TouchableOpacity onPress={() => setPickerRow(i)} hitSlop={6}>
+                      <TouchableOpacity onPress={() => setFormPickerRow(i)} hitSlop={6}>
                         <Text style={styles.formChipAction}>Change</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={() => clearRowForm(i)} hitSlop={6}>
+                      <TouchableOpacity onPress={() => clearAreaForm(i)} hitSlop={6}>
                         <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
                       </TouchableOpacity>
                     </View>
                   ) : (
-                    <TouchableOpacity style={styles.formPickBtn} onPress={() => setPickerRow(i)}>
-                      <Ionicons name="search" size={16} color={Colors.primary} />
-                      <Text style={styles.formPickText}>Select a form</Text>
+                    <TouchableOpacity style={styles.formPickBtn} onPress={() => setFormPickerRow(i)}>
+                      <Ionicons name="swap-horizontal-outline" size={16} color={Colors.primary} />
+                      <Text style={styles.formPickText}>Use a different form for this area</Text>
                     </TouchableOpacity>
                   )}
                 </View>
               ))}
 
-              <TouchableOpacity style={styles.addRowBtn} onPress={addRow} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.addRowBtn} onPress={addArea} activeOpacity={0.8}>
                 <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />
-                <Text style={styles.addRowText}>Add another location</Text>
+                <Text style={styles.addRowText}>Add another area</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -392,17 +355,17 @@ export default function AssignmentsScreen() {
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <Text style={styles.saveBtnText}>
-                    {rows.length > 1 ? `Add ${rows.length} assignments` : 'Add assignment'}
+                    {areas.length > 1 ? `Add ${areas.length} areas` : 'Add area'}
                   </Text>
                 )}
               </TouchableOpacity>
             </ScrollView>
 
             <FormPicker
-              visible={pickerRow !== null}
-              onClose={() => setPickerRow(null)}
+              visible={formPickerRow !== null}
+              onClose={() => setFormPickerRow(null)}
               onPick={(form) => {
-                if (pickerRow !== null) void pickRowForm(pickerRow, form);
+                if (formPickerRow !== null) void pickAreaForm(formPickerRow, form);
               }}
             />
           </View>
@@ -474,8 +437,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   assignNum: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, marginTop: 1 },
-  assignLoc: { fontSize: 14, color: Colors.text, fontWeight: '500' },
-  assignForm: { fontSize: 12, color: Colors.info, marginTop: 2 },
+  assignArea: { fontSize: 14, color: Colors.text, fontWeight: '500' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: Colors.background,
@@ -521,13 +483,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   addRowText: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
-  fieldLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
   input: {
     borderWidth: 1,
     borderColor: Colors.border,
@@ -539,7 +494,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   hint: { fontSize: 12, color: Colors.textMuted },
-  coordOk: { fontSize: 12, color: Colors.success, fontWeight: '600' },
   formPickBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -548,10 +502,11 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: Colors.surface,
+    marginTop: 8,
   },
-  formPickText: { fontSize: 15, color: Colors.primary, fontWeight: '600' },
+  formPickText: { fontSize: 13, color: Colors.primary, fontWeight: '600', flex: 1 },
   formChip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -560,11 +515,12 @@ const styles = StyleSheet.create({
     borderColor: Colors.primary,
     borderRadius: 10,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 9,
     backgroundColor: Colors.primaryLight,
+    marginTop: 8,
   },
-  formChipText: { flex: 1, fontSize: 14, color: Colors.text, fontWeight: '500' },
-  formChipAction: { fontSize: 13, color: Colors.primary, fontWeight: '700' },
+  formChipText: { flex: 1, fontSize: 13, color: Colors.text, fontWeight: '500' },
+  formChipAction: { fontSize: 12, color: Colors.primary, fontWeight: '700' },
   saveBtn: {
     backgroundColor: Colors.primary,
     borderRadius: 12,

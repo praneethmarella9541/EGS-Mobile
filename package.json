@@ -29,9 +29,11 @@
     "expo-image-picker": "~17.0.11",
     "expo-linking": "8.0.12",
     "expo-location": "~19.0.8",
+    "expo-media-library": "~18.2.1",
     "expo-router": "~6.0.24",
     "expo-secure-store": "15.0.8",
     "expo-sharing": "~14.0.8",
+    "expo-speech-recognition": "^56.0.1",
     "expo-status-bar": "3.0.9",
     "expo-web-browser": "~15.0.11",
     "react": "19.1.0",
@@ -50,6 +52,7 @@
     "typescript": "~5.9.2"
   },
   "overrides": {
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "expo-font": "14.0.12"
   }
 }

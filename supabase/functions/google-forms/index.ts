@@ -122,6 +122,26 @@ Deno.serve(async (req) => {
     return null;
   }
 
+  // The Drive filename (shown in the Forms home screen, Drive, and the
+  // editor's top-left) is a Drive property, NOT the Forms API's
+  // info.documentTitle — updateFormInfo accepts documentTitle in the request
+  // and returns 200 but silently no-ops it. Renaming the Drive file directly
+  // is the only thing that actually works.
+  async function renameDriveFile(fileId: string, name: string, token: string): Promise<string | null> {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const message = err.error?.message || `HTTP ${res.status}`;
+      console.error(`Failed to rename ${fileId}:`, message);
+      return message;
+    }
+    return null;
+  }
+
   try {
     const accessToken = await googleAccessToken(refreshToken);
     const gHeaders = {
@@ -135,10 +155,17 @@ Deno.serve(async (req) => {
         const res = await fetch('https://forms.googleapis.com/v1/forms', {
           method: 'POST',
           headers: gHeaders,
-          body: JSON.stringify({ info: { title, documentTitle: title } }),
+          // forms.create only honors info.title — the Drive filename (what the
+          // Forms home screen/list shows) is a separate Drive property and
+          // must be set via the Drive API below, or every form shows up as
+          // "Untitled form" there despite having the right on-page title.
+          body: JSON.stringify({ info: { title } }),
         });
         const form = await res.json();
         if (!res.ok) throw new Error(form.error?.message || 'Failed to create form');
+
+        const titleWarning = await renameDriveFile(form.formId, title, accessToken);
+
         await ensurePubliclyShared(form.formId, accessToken);
 
         const responderUri: string = form.responderUri;
@@ -155,7 +182,7 @@ Deno.serve(async (req) => {
           .select('*')
           .single();
         if (insErr) throw insErr;
-        return json({ form: row });
+        return json({ form: row, titleWarning });
       }
 
       case 'list': {
@@ -180,11 +207,28 @@ Deno.serve(async (req) => {
         const res = await fetch(formUrl(body.formId), { headers: gHeaders });
         const form = await res.json();
         if (!res.ok) throw new Error(form.error?.message || 'Failed to load form');
+
+        // Self-heal forms whose Drive filename never got set to match the form's
+        // title (e.g. created before this fix) — check the real Drive name
+        // (info.documentTitle from the Forms API is unreliable/not kept in
+        // sync) and rename the file directly if it doesn't match.
+        let titleWarning: string | null = null;
+        if (form.info?.title) {
+          const driveRes = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(body.formId)}?fields=name`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          const driveFile = await driveRes.json().catch(() => ({}));
+          if (driveRes.ok && driveFile.name !== form.info.title) {
+            titleWarning = await renameDriveFile(body.formId, form.info.title, accessToken);
+          }
+        }
+
         const shareWarning = await ensurePubliclyShared(body.formId, accessToken);
         if (typeof form.linkedSheetId === 'string') {
           await ensurePubliclyShared(form.linkedSheetId, accessToken);
         }
-        return json({ form, shareWarning });
+        return json({ form, shareWarning, titleWarning });
       }
 
       case 'batchUpdate': {

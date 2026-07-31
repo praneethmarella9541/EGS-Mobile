@@ -84,38 +84,51 @@ where u.id = p.id
   and p.role <> 'admin';
 
 -- ============================================================================
--- 8. Field attendance: admins assign (date, user, location, form); users check
---    in with a photo + geo-verification, which unlocks the form link.
+-- 8. Field visits: admins assign a broad AREA (date, user, free-text area
+--    label, no pin). Forms default to the single global fixed form (see
+--    app_settings below) but admin can optionally override with a different
+--    form per area assignment via form_id/form_url. Users log N location
+--    visits/day against their area, each with their own live-GPS place,
+--    bulk photos, and notes.
 -- ============================================================================
 
 create table if not exists public.assignments (
   id             uuid primary key default gen_random_uuid(),
   user_id        uuid not null references auth.users (id) on delete cascade,
   assigned_date  date not null,
-  location_label text not null,
-  latitude       double precision not null,
-  longitude      double precision not null,
-  form_url       text not null,
+  area_label     text not null,
+  form_id        text, -- optional override of the global field form; null = use default
+  form_url       text,
   created_by     uuid references auth.users (id) on delete set null,
   created_at     timestamptz not null default now()
 );
 create index if not exists assignments_user_date_idx
   on public.assignments (user_id, assigned_date);
 
-create table if not exists public.attendance (
+create table if not exists public.location_visits (
   id            uuid primary key default gen_random_uuid(),
-  assignment_id uuid not null unique references public.assignments (id) on delete cascade,
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
   user_id       uuid not null references auth.users (id) on delete cascade,
-  photo_path    text, -- nullable: photo capture is currently disabled (see FACE_VERIFICATION_ENABLED)
-  captured_lat  double precision not null,
-  captured_lng  double precision not null,
-  distance_m    numeric not null,
-  verified      boolean not null default true,
+  place_label   text not null,     -- address the user typed/picked
+  latitude      double precision not null, -- device's live GPS at submit time
+  longitude     double precision not null,
+  distance_m    numeric not null,  -- distance between live GPS and the picked address
+  notes         text not null default '',
   submitted_at  timestamptz not null default now()
 );
+create index if not exists location_visits_assignment_idx
+  on public.location_visits (assignment_id);
 
-alter table public.assignments enable row level security;
-alter table public.attendance  enable row level security;
+create table if not exists public.visit_photos (
+  id         uuid primary key default gen_random_uuid(),
+  visit_id   uuid not null references public.location_visits (id) on delete cascade,
+  photo_path text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.assignments      enable row level security;
+alter table public.location_visits  enable row level security;
+alter table public.visit_photos     enable row level security;
 
 -- assignments: admins manage everything; users read only their own
 drop policy if exists "assignments admin all" on public.assignments;
@@ -128,38 +141,75 @@ create policy "assignments read own"
   on public.assignments for select
   using (auth.uid() = user_id or public.is_admin());
 
--- attendance: users insert/read their own; admins read all
-drop policy if exists "attendance insert own" on public.attendance;
-create policy "attendance insert own"
-  on public.attendance for insert
+-- location_visits: users insert/read/update their own; admins read all
+drop policy if exists "visits insert own" on public.location_visits;
+create policy "visits insert own"
+  on public.location_visits for insert
   with check (auth.uid() = user_id);
 
-drop policy if exists "attendance read own or admin" on public.attendance;
-create policy "attendance read own or admin"
-  on public.attendance for select
+drop policy if exists "visits read own or admin" on public.location_visits;
+create policy "visits read own or admin"
+  on public.location_visits for select
   using (auth.uid() = user_id or public.is_admin());
 
+-- Notes/photos are editable anytime (no EOD lock) — see app/(workspace)/visit-edit.tsx.
+drop policy if exists "visits update own" on public.location_visits;
+create policy "visits update own"
+  on public.location_visits for update
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- visit_photos has no user_id of its own — gate through the parent visit.
+drop policy if exists "visit photos insert own" on public.visit_photos;
+create policy "visit photos insert own"
+  on public.visit_photos for insert
+  with check (exists (
+    select 1 from public.location_visits v where v.id = visit_id and v.user_id = auth.uid()
+  ));
+
+drop policy if exists "visit photos read own or admin" on public.visit_photos;
+create policy "visit photos read own or admin"
+  on public.visit_photos for select
+  using (exists (
+    select 1 from public.location_visits v
+    where v.id = visit_id and (v.user_id = auth.uid() or public.is_admin())
+  ));
+
+drop policy if exists "visit photos delete own" on public.visit_photos;
+create policy "visit photos delete own"
+  on public.visit_photos for delete
+  using (exists (
+    select 1 from public.location_visits v where v.id = visit_id and v.user_id = auth.uid()
+  ));
+
 -- ============================================================================
--- 9. Storage bucket for attendance photos (private). Files live under <uid>/...
+-- 9. Storage bucket for bulk visit photos (private). Files live under <uid>/<visit_id>/...
 -- ============================================================================
 insert into storage.buckets (id, name, public)
-values ('attendance-photos', 'attendance-photos', false)
+values ('visit-photos', 'visit-photos', false)
 on conflict (id) do nothing;
 
-drop policy if exists "attendance photos insert own" on storage.objects;
-create policy "attendance photos insert own"
+drop policy if exists "visit photos storage insert own" on storage.objects;
+create policy "visit photos storage insert own"
   on storage.objects for insert to authenticated
   with check (
-    bucket_id = 'attendance-photos'
+    bucket_id = 'visit-photos'
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
-drop policy if exists "attendance photos read own or admin" on storage.objects;
-create policy "attendance photos read own or admin"
+drop policy if exists "visit photos storage read own or admin" on storage.objects;
+create policy "visit photos storage read own or admin"
   on storage.objects for select to authenticated
   using (
-    bucket_id = 'attendance-photos'
+    bucket_id = 'visit-photos'
     and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
+  );
+
+drop policy if exists "visit photos storage delete own" on storage.objects;
+create policy "visit photos storage delete own"
+  on storage.objects for delete to authenticated
+  using (
+    bucket_id = 'visit-photos'
+    and (storage.foldername(name))[1] = auth.uid()::text
   );
 
 -- ============================================================================
@@ -200,10 +250,11 @@ create policy "forms admin write"
   using (public.is_admin()) with check (public.is_admin());
 
 -- ============================================================================
--- 12. Face registration + verified attendance. Users register their face once
---     (two selfies cross-verified for quality, see face-auth Edge Function);
---     only the embedding is kept, never the photos. Check-ins are then
---     face-matched against it via the same function.
+-- 12. Face registration. Users register their face once (two selfies
+--     cross-verified for quality, see face-auth Edge Function); only the
+--     embedding is kept, never the photos. Currently disabled — see
+--     FACE_VERIFICATION_ENABLED in lib/types.ts — pending re-wiring into
+--     location_visits when re-enabled.
 -- ============================================================================
 alter table public.profiles add column if not exists face_registered boolean not null default false;
 
@@ -216,4 +267,38 @@ create table if not exists public.face_embeddings (
 );
 alter table public.face_embeddings enable row level security;
 
-alter table public.attendance add column if not exists face_similarity numeric;
+-- ============================================================================
+-- 13. Singleton settings: the one fixed Google Form used for every area, every
+--     user, every day (admin designates it from the Forms tab).
+-- ============================================================================
+create table if not exists public.app_settings (
+  id             boolean primary key default true check (id),
+  -- No FK to public.forms — the Forms tab lists every Google Form in the
+  -- admin's Drive (not just app-created ones), and any of them can be set as
+  -- the field form.
+  field_form_id  text,
+  field_form_url text,
+  -- When true, the admin's Responses view (FormResponsesTab) shows verified
+  -- who/where/when per response, matched from location_visits — see
+  -- lib/visit-match.ts. Nothing is written into the Google Form itself.
+  include_visit_context boolean not null default true,
+  updated_at     timestamptz not null default now()
+);
+insert into public.app_settings (id) values (true) on conflict do nothing;
+alter table public.app_settings enable row level security;
+
+drop policy if exists "app_settings read all authed" on public.app_settings;
+create policy "app_settings read all authed"
+  on public.app_settings for select to authenticated using (true);
+
+drop policy if exists "app_settings admin write" on public.app_settings;
+create policy "app_settings admin write"
+  on public.app_settings for all
+  using (public.is_admin()) with check (public.is_admin());
+
+-- Note: visit context (who/where/when per response) is NOT written into the
+-- Google Form — an earlier prefill-question approach was replaced because
+-- respondents could see/edit those fields. Instead the Responses view
+-- (components/forms/FormResponsesTab.tsx) matches each response to a
+-- location_visits row by submission time (see lib/visit-match.ts), using data
+-- the field user never touches.

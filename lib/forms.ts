@@ -23,8 +23,11 @@ export const forms = {
   },
 
   /** Create a new Google Form (admin only). */
-  create(title: string): Promise<{ form: CreatedForm }> {
-    return callEdge<{ form: CreatedForm }>('google-forms', { action: 'create', title });
+  create(title: string): Promise<{ form: CreatedForm; titleWarning?: string | null }> {
+    return callEdge<{ form: CreatedForm; titleWarning?: string | null }>('google-forms', {
+      action: 'create',
+      title,
+    });
   },
 
   /** Delete a Google Form + its mirror row (admin only). */

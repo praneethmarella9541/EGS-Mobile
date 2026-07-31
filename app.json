@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "EGS CRM",
-    "slug": "egs-mobile",
+    "slug": "egs-field-attendance",
     "version": "1.0.0",
     "scheme": "egscrm",
     "orientation": "portrait",
@@ -9,7 +9,11 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "in.egs.crm"
+      "bundleIdentifier": "in.egs.crm",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "EGS CRM uses speech recognition to convert your dictated notes to text.",
+        "NSMicrophoneUsageDescription": "EGS CRM uses the microphone to let you dictate notes."
+      }
     },
     "android": {
       "package": "in.egs.crm",
@@ -58,6 +62,21 @@
         {
           "cameraPermission": "EGS CRM uses the camera to capture your attendance photo."
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "EGS CRM uses the microphone to let you dictate notes.",
+          "speechRecognitionPermission": "EGS CRM uses speech recognition to convert your dictated notes to text."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "EGS CRM needs access to your photos to save downloaded images.",
+          "savePhotosPermission": "EGS CRM needs permission to save images to your photo library.",
+          "isAccessMediaLocationEnabled": false
+        }
       ]
     ],
     "experiments": {
@@ -66,7 +85,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "dabda90c-7c4f-4454-9177-a45dee37a24d"
+        "projectId": "4bbce316-1865-4f9d-ade7-ad38eef12560"
       }
     },
     "owner": "dreamerslabs"

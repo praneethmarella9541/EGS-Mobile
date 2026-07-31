@@ -3,6 +3,7 @@
  */
 
 import type { EditorBlock } from './google-forms-editor-model';
+import type { MatchableVisit } from './visit-match';
 
 export type FormAnswer = {
   questionId: string;
@@ -195,7 +196,11 @@ function csvEscape(value: string): string {
   return value;
 }
 
-export function responsesToCsv(responses: FormResponse[], blocks: EditorBlock[]): string {
+export function responsesToCsv(
+  responses: FormResponse[],
+  blocks: EditorBlock[],
+  verifiedByResponseId?: Map<string, MatchableVisit>
+): string {
   const titles = buildQuestionTitleMap(blocks);
   const questionIds = Array.from(titles.keys());
   if (questionIds.length === 0) {
@@ -211,14 +216,25 @@ export function responsesToCsv(responses: FormResponse[], blocks: EditorBlock[])
     'Submitted',
     'Email',
     'Score',
+    ...(verifiedByResponseId
+      ? ['Submitted by (verified)', 'Location (verified)', 'Visit date (verified)']
+      : []),
     ...questionIds.map((id) => titles.get(id) || id),
   ];
   const rows = responses.map((r) => {
+    const verified = verifiedByResponseId?.get(r.responseId);
     const cells = [
       r.responseId,
       r.lastSubmittedTime || r.createTime || '',
       r.respondentEmail || '',
       r.totalScore != null ? String(r.totalScore) : '',
+      ...(verifiedByResponseId
+        ? [
+            verified?.userLabel ?? '',
+            verified?.placeLabel ?? '',
+            verified ? new Date(verified.submittedAt).toLocaleDateString() : '',
+          ]
+        : []),
       ...questionIds.map((qId) => {
         const ans = r.answers?.[qId];
         return ans ? formatAnswer(ans) : '';
