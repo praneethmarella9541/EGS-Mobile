@@ -8,6 +8,7 @@ export interface TeamMember {
   restricted_features: string[];
   mobile_phone: string | null;
   created_at: string;
+  blocked: boolean;
 }
 
 /** Invoke the admin-users Edge Function; the user's JWT is attached by callEdge. */
@@ -36,4 +37,8 @@ export const adminUsers = {
   }) => invoke<{ ok: true }>({ action: 'update', ...input }),
 
   remove: (id: string) => invoke<{ ok: true }>({ action: 'delete', id }),
+
+  /** Revokes sign-in without touching any of the user's data. */
+  block: (id: string) => invoke<{ ok: true }>({ action: 'block', id }),
+  unblock: (id: string) => invoke<{ ok: true }>({ action: 'unblock', id }),
 };

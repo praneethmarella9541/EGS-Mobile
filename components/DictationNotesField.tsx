@@ -19,19 +19,12 @@ const DICTATION_AVAILABLE = !!speech?.ExpoSpeechRecognitionModule;
 const useSpeechRecognitionEvent: SpeechModule['useSpeechRecognitionEvent'] =
   speech?.useSpeechRecognitionEvent ?? (((_event: unknown, _listener: unknown) => {}) as any);
 
-/** Languages offered for dictation — common Indian regional languages + English. */
+/** Languages offered for dictation. */
 const DICTATION_LANGUAGES: { code: string; label: string }[] = [
   { code: 'en-IN', label: 'English (India)' },
   { code: 'hi-IN', label: 'Hindi' },
-  { code: 'ta-IN', label: 'Tamil' },
-  { code: 'te-IN', label: 'Telugu' },
   { code: 'kn-IN', label: 'Kannada' },
-  { code: 'ml-IN', label: 'Malayalam' },
-  { code: 'mr-IN', label: 'Marathi' },
-  { code: 'bn-IN', label: 'Bengali' },
-  { code: 'gu-IN', label: 'Gujarati' },
-  { code: 'pa-IN', label: 'Punjabi' },
-  { code: 'ur-IN', label: 'Urdu' },
+  { code: 'te-IN', label: 'Telugu' },
 ];
 
 type Props = {

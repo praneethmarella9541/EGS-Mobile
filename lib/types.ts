@@ -52,15 +52,32 @@ export type PlaceSource = 'nearby' | 'reverse_geocode' | 'manual_search';
  */
 export const FACE_VERIFICATION_ENABLED = false;
 
+/** One Google Form explicitly attached to an area assignment (see AssignmentForm below). */
+export interface AssignmentForm {
+  id: string;
+  assignment_id: string;
+  form_id: string;
+  form_title: string;
+  form_url: string;
+  created_at: string;
+}
+
 /** An admin-assigned area for a user on a given date — a free-text label, no pin. */
 export interface Assignment {
   id: string;
   user_id: string;
   assigned_date: string; // YYYY-MM-DD
   area_label: string; // e.g. "Sector 4-7, Gurgaon" — admin-typed, no geocoding
-  /** Optional override of the global field form for this area. Null = use the default. */
+  /** Legacy single-form override of the global field form. Null = use the default.
+   *  Superseded by `forms` below when forms_customized is true. */
   form_id: string | null;
   form_url: string | null;
+  /** True once an admin has explicitly picked a form set via the multi-select —
+   *  at that point `forms` is authoritative (even if empty), no fallback. */
+  forms_customized: boolean;
+  /** Explicitly attached forms (only meaningful when forms_customized is true).
+   *  Present when the query embeds assignment_forms; absent otherwise. */
+  forms?: AssignmentForm[];
   created_by: string;
   created_at: string;
 }

@@ -17,7 +17,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { ScreenHeader } from '../../../components/ScreenHeader';
 import { Colors } from '../../../constants/colors';
 import { listMyAssignments, toDateKey } from '../../../lib/assignments';
-import { resolveAssignmentForm } from '../../../lib/settings';
+import { resolveAssignmentForms } from '../../../lib/settings';
 import { verifyStillNearVisit } from '../../../lib/visits';
 import type { AssignmentWithVisits, LocationVisit } from '../../../lib/types';
 
@@ -28,7 +28,9 @@ export default function TasksScreen() {
   const [areas, setAreas] = useState<AssignmentWithVisits[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [busyVisitId, setBusyVisitId] = useState<string | null>(null);
+  // Keyed by `${visitId}|${formId ?? 'default'}` — multiple forms per area
+  // means multiple independent "Open form" buttons per visit.
+  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   const dateKey = toDateKey(date);
 
@@ -61,8 +63,6 @@ export default function TasksScreen() {
         assignmentId: area.id,
         areaLabel: area.area_label,
         assignedDate: area.assigned_date,
-        formId: area.form_id ?? '',
-        formUrl: area.form_url ?? '',
       },
     } as any);
   }
@@ -74,24 +74,39 @@ export default function TasksScreen() {
     } as any);
   }
 
-  /** Re-verifies GPS against where the visit was logged before reopening the form. */
-  async function reopenForm(visit: LocationVisit, area: AssignmentWithVisits) {
-    setBusyVisitId(visit.id);
+  /**
+   * Re-verifies GPS against where the visit was logged before reopening a
+   * form. `formOverride` opens that specific attached form directly; omit it
+   * to resolve the area's single form (legacy override or global default).
+   */
+  async function reopenForm(
+    visit: LocationVisit,
+    area: AssignmentWithVisits,
+    formOverride?: { id: string; url: string }
+  ) {
+    const key = `${visit.id}|${formOverride?.id ?? 'default'}`;
+    setBusyKey(key);
     try {
       await verifyStillNearVisit(visit);
-      const field = await resolveAssignmentForm(area);
-      if (!field) {
-        Alert.alert('No form set', 'Ask your admin to set a field form in the Forms tab.');
-        return;
+      let url: string;
+      if (formOverride) {
+        url = formOverride.url;
+      } else {
+        const fields = await resolveAssignmentForms(area);
+        if (fields.length === 0) {
+          Alert.alert('No form set', 'Ask your admin to set a field form in the Forms tab.');
+          return;
+        }
+        url = fields[0].url;
       }
       router.push({
         pathname: '/(workspace)/form-view',
-        params: { url: field.url, title: visit.place_label },
+        params: { url, title: visit.place_label },
       } as any);
     } catch (e: any) {
       Alert.alert('Could not open form', e?.message ?? 'Please try again.');
     } finally {
-      setBusyVisitId(null);
+      setBusyKey(null);
     }
   }
 
@@ -179,7 +194,20 @@ export default function TasksScreen() {
                   </View>
 
                   {area.visits.map((v) => {
-                    const busy = busyVisitId === v.id;
+                    // A customized area with attached forms gets one "Open form"
+                    // button per form; otherwise the single legacy/default button.
+                    const formButtons: {
+                      key: string;
+                      label: string;
+                      override?: { id: string; url: string };
+                    }[] =
+                      area.forms_customized && area.forms && area.forms.length > 0
+                        ? area.forms.map((f) => ({
+                            key: f.form_id,
+                            label: f.form_title || 'Form',
+                            override: { id: f.form_id, url: f.form_url },
+                          }))
+                        : [{ key: 'default', label: 'Open form', override: undefined }];
                     return (
                       <View key={v.id} style={styles.visitBlock}>
                         <View style={styles.visitRow}>
@@ -207,20 +235,28 @@ export default function TasksScreen() {
                             <Ionicons name="pencil-outline" size={14} color={Colors.primary} />
                             <Text style={styles.visitActionText}>Edit</Text>
                           </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.visitActionBtn}
-                            onPress={() => reopenForm(v, area)}
-                            disabled={busy}
-                          >
-                            {busy ? (
-                              <ActivityIndicator size="small" color={Colors.primary} />
-                            ) : (
-                              <>
-                                <Ionicons name="document-text-outline" size={14} color={Colors.primary} />
-                                <Text style={styles.visitActionText}>Open form</Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
+                          {formButtons.map((fb) => {
+                            const busy = busyKey === `${v.id}|${fb.key}`;
+                            return (
+                              <TouchableOpacity
+                                key={fb.key}
+                                style={styles.visitActionBtn}
+                                onPress={() => reopenForm(v, area, fb.override)}
+                                disabled={busy}
+                              >
+                                {busy ? (
+                                  <ActivityIndicator size="small" color={Colors.primary} />
+                                ) : (
+                                  <>
+                                    <Ionicons name="document-text-outline" size={14} color={Colors.primary} />
+                                    <Text style={styles.visitActionText} numberOfLines={1}>
+                                      {fb.label}
+                                    </Text>
+                                  </>
+                                )}
+                              </TouchableOpacity>
+                            );
+                          })}
                         </View>
                       </View>
                     );
@@ -272,7 +308,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   dateText: { flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text },
-  list: { padding: 16, gap: 14 },
+  list: { padding: 16, paddingBottom: 40, gap: 14 },
   empty: { alignItems: 'center', gap: 8, paddingTop: 50 },
   emptyText: { fontSize: 14, color: Colors.textSecondary },
   card: {
@@ -311,7 +347,7 @@ const styles = StyleSheet.create({
   visitPlace: { fontSize: 13, fontWeight: '500', color: Colors.text },
   visitNotes: { fontSize: 12, color: Colors.textMuted, marginTop: 1 },
   visitTime: { fontSize: 11, color: Colors.textMuted },
-  visitActions: { flexDirection: 'row', gap: 8, paddingLeft: 22 },
+  visitActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingLeft: 22 },
   visitActionBtn: {
     flexDirection: 'row',
     alignItems: 'center',

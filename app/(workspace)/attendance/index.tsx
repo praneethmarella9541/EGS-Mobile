@@ -12,24 +12,20 @@ import {
   Modal,
   FlatList,
   Image,
+  Linking,
   useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { format } from 'date-fns';
+import { format, subDays, subMonths } from 'date-fns';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { ScreenHeader } from '../../../components/ScreenHeader';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 import { listAssignableUsers, toDateKey, type AssignableUser } from '../../../lib/assignments';
-import {
-  listAdminAssignmentsForDate,
-  listAdminAssignmentsForUser,
-  getPhotoUrls,
-  downloadPhotoToGallery,
-} from '../../../lib/visits';
-import type { AdminAssignmentRow, AssignmentWithVisits, LocationVisit } from '../../../lib/types';
+import { listAdminAssignments, getPhotoUrls, downloadPhotoToGallery } from '../../../lib/visits';
+import type { AdminAssignmentRow, LocationVisit } from '../../../lib/types';
 
-type ViewMode = 'date' | 'user';
+type DatePickerTarget = 'from' | 'to' | null;
 
 /**
  * How much to trust a visit's place, in one line. Since the place is normally
@@ -58,22 +54,43 @@ function visitProvenance(v: LocationVisit): string {
   return parts.join(' · ');
 }
 
+function photoCount(row: AdminAssignmentRow): number {
+  return row.visits.reduce((sum, v) => sum + v.photos.length, 0);
+}
+
+function formatDuration(minutes: number): string {
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * First and last visit logged under this area, and the span between them —
+ * lets an admin see how long a user was active at a location without
+ * expanding every individual visit. `row.visits` is pre-sorted ascending.
+ */
+function visitSpan(
+  row: AdminAssignmentRow
+): { first: string; last: string; minutes: number; durationLabel: string | null } | null {
+  if (row.visits.length === 0) return null;
+  const first = row.visits[0].submitted_at;
+  const last = row.visits[row.visits.length - 1].submitted_at;
+  const minutes = Math.round((new Date(last).getTime() - new Date(first).getTime()) / 60000);
+  return { first, last, minutes, durationLabel: minutes <= 0 ? null : `${formatDuration(minutes)} span` };
+}
+
 export default function AttendanceScreen() {
   const { isAdmin } = useAuth();
   const { width: screenWidth } = useWindowDimensions();
-  const [mode, setMode] = useState<ViewMode>('date');
 
-  // By-date state
-  const [date, setDate] = useState(new Date());
-  const [showPicker, setShowPicker] = useState(false);
-  const [dateRows, setDateRows] = useState<AdminAssignmentRow[]>([]);
+  const [fromDate, setFromDate] = useState(new Date());
+  const [toDate, setToDate] = useState(new Date());
+  const [activePreset, setActivePreset] = useState<'1d' | '1w' | '1m' | null>(null);
+  const [activePicker, setActivePicker] = useState<DatePickerTarget>(null);
 
-  // By-user state
   const [users, setUsers] = useState<AssignableUser[]>([]);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<AssignableUser | null>(null);
-  const [userRows, setUserRows] = useState<AssignmentWithVisits[]>([]);
+  const [userId, setUserId] = useState<string>(''); // '' = all users
+  const [userPickerOpen, setUserPickerOpen] = useState(false);
 
+  const [rows, setRows] = useState<AdminAssignmentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -81,34 +98,19 @@ export default function AttendanceScreen() {
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [downloading, setDownloading] = useState(false);
 
-  const dateKey = toDateKey(date);
+  const fromKey = toDateKey(fromDate);
+  const toKey = toDateKey(toDate);
 
-  const loadByDate = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
-      setDateRows(await listAdminAssignmentsForDate(dateKey));
+      setRows(await listAdminAssignments({ from: fromKey, to: toKey, userId: userId || undefined }));
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'Failed to load attendance');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [dateKey]);
-
-  const loadByUser = useCallback(async () => {
-    if (!selectedUser) {
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-    try {
-      setUserRows(await listAdminAssignmentsForUser(selectedUser.id));
-    } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'Failed to load attendance');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [selectedUser]);
+  }, [fromKey, toKey, userId]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -116,13 +118,42 @@ export default function AttendanceScreen() {
       return;
     }
     setLoading(true);
-    if (mode === 'date') loadByDate();
-    else loadByUser();
-  }, [isAdmin, mode, loadByDate, loadByUser]);
+    load();
+  }, [isAdmin, load]);
 
   useEffect(() => {
     if (isAdmin) listAssignableUsers().then(setUsers).catch(() => {});
   }, [isAdmin]);
+
+  // Keep the range non-inverted without a separate validation error — picking
+  // a "from" after the current "to" (or vice versa) just drags the other end.
+  // A manual edit means the range no longer matches any preset, so clear the highlight.
+  function onFromPicked(selected: Date) {
+    setFromDate(selected);
+    if (toDateKey(selected) > toKey) setToDate(selected);
+    setActivePreset(null);
+  }
+  function onToPicked(selected: Date) {
+    setToDate(selected);
+    if (toDateKey(selected) < fromKey) setFromDate(selected);
+    setActivePreset(null);
+  }
+
+  function applyPreset(preset: '1d' | '1w' | '1m') {
+    const today = new Date();
+    const start = preset === '1d' ? today : preset === '1w' ? subDays(today, 6) : subMonths(today, 1);
+    setFromDate(start);
+    setToDate(today);
+    setActivePreset(preset);
+  }
+
+  function resetFilters() {
+    const today = new Date();
+    setFromDate(today);
+    setToDate(today);
+    setUserId('');
+    setActivePreset(null);
+  }
 
   function toggleExpand(id: string) {
     setExpanded((prev) => {
@@ -135,9 +166,24 @@ export default function AttendanceScreen() {
 
   async function viewPhotos(visit: LocationVisit) {
     if (visit.photos.length === 0) return;
-    const urls = await getPhotoUrls(visit.photos.map((p) => p.photo_path));
-    setGalleryIndex(0);
-    setGallery(urls.filter((u): u is string => !!u));
+    try {
+      const paths = visit.photos.map((p) => p.photo_path);
+      const urls = await getPhotoUrls(paths);
+      const usable = urls.filter((u): u is string => !!u);
+      // Every path came back unsigned — don't open an empty lightbox and leave
+      // the admin wondering whether the tap registered.
+      if (usable.length === 0) {
+        Alert.alert(
+          'Photos unavailable',
+          'Storage returned no link for this visit’s photos. They may have been deleted, or predate the move to Google Cloud Storage.'
+        );
+        return;
+      }
+      setGalleryIndex(0);
+      setGallery(usable);
+    } catch (e: any) {
+      Alert.alert('Could not open photos', e?.message ?? 'Please try again.');
+    }
   }
 
   async function downloadCurrentPhoto() {
@@ -153,6 +199,20 @@ export default function AttendanceScreen() {
     }
   }
 
+  // Hooks must run unconditionally on every render — keep this useMemo above
+  // the `!isAdmin` early return below (signing out flips isAdmin to false
+  // while this screen may still be mounted, which would otherwise render
+  // fewer hooks than the previous pass and crash).
+  const todayKey = toDateKey(new Date());
+  const stats = useMemo(() => {
+    const totalAreas = rows.length;
+    const visited = rows.filter((r) => r.visits.length > 0).length;
+    const totalVisits = rows.reduce((sum, r) => sum + r.visits.length, 0);
+    const totalPhotos = rows.reduce((sum, r) => sum + photoCount(r), 0);
+    const totalMinutes = rows.reduce((sum, r) => sum + (visitSpan(r)?.minutes ?? 0), 0);
+    return { totalAreas, visited, totalVisits, totalPhotos, totalMinutes };
+  }, [rows]);
+
   if (!isAdmin) {
     return (
       <View style={styles.container}>
@@ -165,7 +225,7 @@ export default function AttendanceScreen() {
     );
   }
 
-  function statusPill(row: AdminAssignmentRow | AssignmentWithVisits, isPast: boolean) {
+  function statusPill(row: AdminAssignmentRow, isPast: boolean) {
     const count = row.visits.length;
     if (count > 0) {
       return (
@@ -202,6 +262,15 @@ export default function AttendanceScreen() {
           <Text style={styles.visitTime}>
             {format(new Date(v.submitted_at), 'MMM d, h:mm a')} · {visitProvenance(v)}
           </Text>
+          <TouchableOpacity
+            onPress={() =>
+              Linking.openURL(
+                `https://www.google.com/maps/search/?api=1&query=${v.latitude},${v.longitude}`
+              )
+            }
+          >
+            <Text style={styles.mapLink}>View on map</Text>
+          </TouchableOpacity>
         </View>
         {v.photos.length > 0 && (
           <TouchableOpacity style={styles.photoBtn} onPress={() => viewPhotos(v)}>
@@ -213,26 +282,43 @@ export default function AttendanceScreen() {
     );
   }
 
-  function renderRow(row: AdminAssignmentRow | AssignmentWithVisits, isPast: boolean, label?: string) {
+  function renderRow(row: AdminAssignmentRow) {
     const isOpen = expanded.has(row.id);
+    const isPast = row.assigned_date < todayKey;
+    const heading = row.profile?.display_name || row.profile?.email || 'Unknown user';
+    const dateLabel = format(new Date(`${row.assigned_date}T00:00:00`), 'EEE, MMM d');
+    const span = visitSpan(row);
     return (
       <View key={row.id} style={styles.row}>
         <TouchableOpacity style={styles.rowHeader} activeOpacity={0.75} onPress={() => toggleExpand(row.id)}>
-          {'profile' in row && row.profile ? (
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                {(row.profile.display_name || row.profile.email || '?').charAt(0).toUpperCase()}
-              </Text>
-            </View>
-          ) : null}
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{heading.charAt(0).toUpperCase()}</Text>
+          </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.rowName} numberOfLines={1}>
-              {label ?? ('profile' in row ? row.profile?.display_name || row.profile?.email : row.assigned_date)}
+              {heading}
             </Text>
             <Text style={styles.rowSub} numberOfLines={1}>
-              {row.area_label}
+              {row.area_label} · {dateLabel}
             </Text>
-            {statusPill(row, isPast)}
+            {span ? (
+              <Text style={styles.rowSpan} numberOfLines={1}>
+                {span.first === span.last
+                  ? `Logged ${format(new Date(span.first), 'h:mm a')}`
+                  : `${format(new Date(span.first), 'h:mm a')} – ${format(new Date(span.last), 'h:mm a')}${
+                      span.durationLabel ? ` · ${span.durationLabel}` : ''
+                    }`}
+              </Text>
+            ) : null}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {statusPill(row, isPast)}
+              {photoCount(row) > 0 && (
+                <View style={styles.photoPill}>
+                  <Ionicons name="image-outline" size={11} color={Colors.primary} />
+                  <Text style={styles.photoPillText}>{photoCount(row)}</Text>
+                </View>
+              )}
+            </View>
           </View>
           <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textMuted} />
         </TouchableOpacity>
@@ -243,119 +329,83 @@ export default function AttendanceScreen() {
     );
   }
 
-  const prettyDate = date.toLocaleDateString(undefined, {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-  const todayKey = toDateKey(new Date());
-  const photoCount = (row: AdminAssignmentRow | AssignmentWithVisits) =>
-    row.visits.reduce((sum, v) => sum + v.photos.length, 0);
+  const selectedUserLabel = userId
+    ? users.find((u) => u.id === userId)?.display_name || users.find((u) => u.id === userId)?.email || '…'
+    : 'All users';
 
-  const dateStats = useMemo(() => {
-    const totalAreas = dateRows.length;
-    const visited = dateRows.filter((r) => r.visits.length > 0).length;
-    const totalVisits = dateRows.reduce((sum, r) => sum + r.visits.length, 0);
-    const totalPhotos = dateRows.reduce((sum, r) => sum + photoCount(r), 0);
-    const isPast = dateKey < todayKey;
-    return { totalAreas, visited, totalVisits, totalPhotos, isPast };
-  }, [dateRows, dateKey, todayKey]);
-
-  const userStats = useMemo(() => {
-    const totalDays = userRows.length;
-    const daysVisited = userRows.filter((r) => r.visits.length > 0).length;
-    const totalVisits = userRows.reduce((sum, r) => sum + r.visits.length, 0);
-    const totalPhotos = userRows.reduce((sum, r) => sum + photoCount(r), 0);
-    return { totalDays, daysVisited, totalVisits, totalPhotos };
-  }, [userRows]);
-
-  function heroStats() {
-    if (mode === 'date') {
-      return [
-        { icon: 'map-outline' as const, value: dateStats.totalAreas, label: 'Areas assigned' },
-        {
-          icon: 'checkmark-circle-outline' as const,
-          value: dateStats.visited,
-          label: `Visited of ${dateStats.totalAreas}`,
-        },
-        { icon: 'location-outline' as const, value: dateStats.totalVisits, label: 'Visits logged' },
-        {
-          icon: dateStats.isPast ? ('close-circle-outline' as const) : ('time-outline' as const),
-          value: dateStats.totalAreas - dateStats.visited,
-          label: dateStats.isPast ? 'No-shows' : 'Pending',
-        },
-        { icon: 'image-outline' as const, value: dateStats.totalPhotos, label: 'Photos captured' },
-      ];
-    }
-    return [
-      { icon: 'calendar-outline' as const, value: userStats.totalDays, label: 'Days assigned' },
-      {
-        icon: 'checkmark-circle-outline' as const,
-        value: userStats.daysVisited,
-        label: `Days visited of ${userStats.totalDays}`,
-      },
-      { icon: 'location-outline' as const, value: userStats.totalVisits, label: 'Visits logged' },
-      { icon: 'image-outline' as const, value: userStats.totalPhotos, label: 'Photos captured' },
-    ];
-  }
+  const heroStats = [
+    {
+      icon: 'checkmark-circle-outline' as const,
+      value: `${stats.visited}/${stats.totalAreas}`,
+      label: 'Areas visited',
+    },
+    { icon: 'location-outline' as const, value: stats.totalVisits, label: 'Visits logged' },
+    { icon: 'close-circle-outline' as const, value: stats.totalAreas - stats.visited, label: 'Not visited' },
+    { icon: 'image-outline' as const, value: stats.totalPhotos, label: 'Photos captured' },
+    { icon: 'time-outline' as const, value: formatDuration(stats.totalMinutes), label: 'Total hours' },
+  ];
 
   return (
     <View style={styles.container}>
       <ScreenHeader title="Attendance" />
 
-      <View style={styles.toggleRow}>
-        <TouchableOpacity
-          style={[styles.toggleBtn, mode === 'date' && styles.toggleBtnActive]}
-          onPress={() => setMode('date')}
-        >
-          <Text style={[styles.toggleText, mode === 'date' && styles.toggleTextActive]}>By Date</Text>
+      <View style={styles.dateRow}>
+        <TouchableOpacity style={styles.dateChip} onPress={() => setActivePicker('from')} activeOpacity={0.8}>
+          <Text style={styles.dateChipLabel}>From</Text>
+          <Text style={styles.dateChipValue}>{format(fromDate, 'MMM d, yyyy')}</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.toggleBtn, mode === 'user' && styles.toggleBtnActive]}
-          onPress={() => setMode('user')}
-        >
-          <Text style={[styles.toggleText, mode === 'user' && styles.toggleTextActive]}>By User</Text>
+        <TouchableOpacity style={styles.dateChip} onPress={() => setActivePicker('to')} activeOpacity={0.8}>
+          <Text style={styles.dateChipLabel}>To</Text>
+          <Text style={styles.dateChipValue}>{format(toDate, 'MMM d, yyyy')}</Text>
         </TouchableOpacity>
       </View>
 
-      {mode === 'date' ? (
-        <TouchableOpacity style={styles.selectorBar} onPress={() => setShowPicker((v) => !v)} activeOpacity={0.8}>
-          <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
-          <Text style={styles.selectorText}>{prettyDate}</Text>
-          <Ionicons name={showPicker ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textMuted} />
+      <View style={styles.presetRow}>
+        {(['1d', '1w', '1m'] as const).map((preset) => {
+          const active = activePreset === preset;
+          return (
+            <TouchableOpacity
+              key={preset}
+              style={[styles.presetBtn, active && styles.presetBtnActive]}
+              onPress={() => applyPreset(preset)}
+            >
+              <Text style={[styles.presetBtnText, active && styles.presetBtnTextActive]}>
+                {preset.toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+        <TouchableOpacity style={styles.resetBtn} onPress={resetFilters}>
+          <Ionicons name="refresh-outline" size={14} color={Colors.textSecondary} />
+          <Text style={styles.resetBtnText}>Reset</Text>
         </TouchableOpacity>
-      ) : (
-        <TouchableOpacity style={styles.selectorBar} onPress={() => setPickerOpen(true)} activeOpacity={0.8}>
-          <Ionicons name="person-outline" size={18} color={Colors.primary} />
-          <Text style={styles.selectorText}>
-            {selectedUser ? selectedUser.display_name || selectedUser.email : 'Choose a user…'}
-          </Text>
-          <Ionicons name="chevron-down" size={18} color={Colors.textMuted} />
-        </TouchableOpacity>
-      )}
+      </View>
 
-      {showPicker && (
+      <TouchableOpacity style={styles.selectorBar} onPress={() => setUserPickerOpen(true)} activeOpacity={0.8}>
+        <Ionicons name="person-outline" size={18} color={Colors.primary} />
+        <Text style={styles.selectorText}>{selectedUserLabel}</Text>
+        <Ionicons name="chevron-down" size={18} color={Colors.textMuted} />
+      </TouchableOpacity>
+
+      {activePicker && (
         <DateTimePicker
-          value={date}
+          value={activePicker === 'from' ? fromDate : toDate}
           mode="date"
           display={Platform.OS === 'ios' ? 'inline' : 'default'}
           onChange={(e, selected) => {
-            setShowPicker(false);
-            // Android fires 'dismissed' (tap-away / Cancel) with the current date —
-            // ignore it, and ignore re-picking the same day, so we never flip into
-            // a loading state that has nothing to reload (was: infinite spinner).
+            const target = activePicker;
+            setActivePicker(null);
+            // Android fires 'dismissed' (tap-away / Cancel) with the current date — ignore it.
             if (e.type !== 'set' || !selected) return;
-            if (toDateKey(selected) === dateKey) return;
-            setLoading(true);
-            setDate(selected);
+            if (target === 'from') onFromPicked(selected);
+            else onToPicked(selected);
           }}
         />
       )}
 
-      {!loading && (mode === 'date' || selectedUser) ? (
+      {!loading ? (
         <View style={styles.heroGrid}>
-          {heroStats().map((s) => (
+          {heroStats.map((s) => (
             <View key={s.label} style={styles.heroCard}>
               <Ionicons name={s.icon} size={18} color={Colors.primary} />
               <Text style={styles.heroValue}>{s.value}</Text>
@@ -379,65 +429,56 @@ export default function AttendanceScreen() {
               refreshing={refreshing}
               onRefresh={() => {
                 setRefreshing(true);
-                mode === 'date' ? loadByDate() : loadByUser();
+                load();
               }}
               tintColor={Colors.primary}
             />
           }
         >
-          {mode === 'date' ? (
-            dateRows.length === 0 ? (
-              <View style={styles.empty}>
-                <Ionicons name="calendar-clear-outline" size={28} color={Colors.textMuted} />
-                <Text style={styles.emptyText}>No assignments for this date.</Text>
-              </View>
-            ) : (
-              dateRows.map((row) =>
-                renderRow(row, dateKey < todayKey, row.profile?.display_name || row.profile?.email || 'Unknown user')
-              )
-            )
-          ) : !selectedUser ? (
-            <View style={styles.empty}>
-              <Ionicons name="person-outline" size={28} color={Colors.textMuted} />
-              <Text style={styles.emptyText}>Choose a user to see their history.</Text>
-            </View>
-          ) : userRows.length === 0 ? (
+          {rows.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="calendar-clear-outline" size={28} color={Colors.textMuted} />
-              <Text style={styles.emptyText}>No assignments for this user yet.</Text>
+              <Text style={styles.emptyText}>
+                {userId ? 'No assignments for this user in this range.' : 'No assignments in this range.'}
+              </Text>
             </View>
           ) : (
-            userRows.map((row) => renderRow(row, row.assigned_date < todayKey, row.assigned_date))
+            rows.map(renderRow)
           )}
         </ScrollView>
       )}
 
       {/* User picker */}
-      <Modal visible={pickerOpen} animationType="slide" transparent onRequestClose={() => setPickerOpen(false)}>
+      <Modal
+        visible={userPickerOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setUserPickerOpen(false)}
+      >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Choose a user</Text>
-              <TouchableOpacity onPress={() => setPickerOpen(false)} hitSlop={8}>
+              <Text style={styles.modalTitle}>Filter by user</Text>
+              <TouchableOpacity onPress={() => setUserPickerOpen(false)} hitSlop={8}>
                 <Ionicons name="close" size={24} color={Colors.text} />
               </TouchableOpacity>
             </View>
             <FlatList
-              data={users}
-              keyExtractor={(u) => u.id}
+              data={[{ id: '', display_name: 'All users', email: '' } as AssignableUser, ...users]}
+              keyExtractor={(u) => u.id || 'all'}
               contentContainerStyle={{ paddingBottom: 24 }}
-              ListEmptyComponent={<Text style={styles.emptyText}>No users yet.</Text>}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.pickerRow}
                   onPress={() => {
-                    setSelectedUser(item);
-                    setPickerOpen(false);
-                    setLoading(true);
+                    setUserId(item.id);
+                    setUserPickerOpen(false);
                   }}
                 >
-                  <Text style={styles.pickerRowText}>{item.display_name || item.email}</Text>
-                  <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                  <Text style={styles.pickerRowText}>
+                    {item.id ? item.display_name || item.email : 'All users'}
+                  </Text>
+                  {item.id === userId && <Ionicons name="checkmark" size={18} color={Colors.primary} />}
                 </TouchableOpacity>
               )}
             />
@@ -497,24 +538,56 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   locked: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
   lockedTitle: { fontSize: 17, fontWeight: '700', color: Colors.text },
-  toggleRow: {
+  dateRow: {
     flexDirection: 'row',
     gap: 8,
     marginHorizontal: 16,
     marginTop: 12,
   },
-  toggleBtn: {
+  dateChip: {
     flex: 1,
-    alignItems: 'center',
+    paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 10,
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  dateChipLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  dateChipValue: { fontSize: 14, fontWeight: '700', color: Colors.text, marginTop: 2 },
+  presetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 8,
+  },
+  presetBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 9,
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
   },
-  toggleBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  toggleText: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
-  toggleTextActive: { color: '#fff' },
+  presetBtnText: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary },
+  presetBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  presetBtnTextActive: { color: '#fff' },
+  resetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginLeft: 'auto',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  resetBtnText: { fontSize: 12, fontWeight: '600', color: Colors.textSecondary },
   selectorBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -550,9 +623,9 @@ const styles = StyleSheet.create({
   },
   heroValue: { fontSize: 20, fontWeight: '800', color: Colors.text },
   heroLabel: { fontSize: 11, color: Colors.textSecondary },
-  list: { padding: 16, gap: 10 },
+  list: { padding: 16, paddingBottom: 40, gap: 10 },
   empty: { alignItems: 'center', gap: 8, paddingTop: 50 },
-  emptyText: { fontSize: 14, color: Colors.textSecondary },
+  emptyText: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', paddingHorizontal: 20 },
   row: {
     backgroundColor: Colors.surface,
     borderRadius: 14,
@@ -577,6 +650,7 @@ const styles = StyleSheet.create({
   avatarText: { color: Colors.primary, fontWeight: '700', fontSize: 15 },
   rowName: { fontSize: 15, fontWeight: '600', color: Colors.text },
   rowSub: { fontSize: 13, color: Colors.textSecondary, marginTop: 1 },
+  rowSpan: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -591,6 +665,18 @@ const styles = StyleSheet.create({
   pillPending: { backgroundColor: '#FEF3C7' },
   pillExpired: { backgroundColor: Colors.borderLight },
   pillText: { fontSize: 11, fontWeight: '700' },
+  photoPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    backgroundColor: Colors.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  photoPillText: { fontSize: 11, fontWeight: '700', color: Colors.primary },
   visitsList: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.border,
@@ -601,6 +687,7 @@ const styles = StyleSheet.create({
   visitPlace: { fontSize: 13, fontWeight: '600', color: Colors.text },
   visitNotes: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   visitTime: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
+  mapLink: { fontSize: 11, fontWeight: '600', color: Colors.primary, marginTop: 2 },
   photoBtn: {
     flexDirection: 'row',
     alignItems: 'center',

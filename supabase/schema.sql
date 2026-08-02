@@ -341,3 +341,43 @@ create policy push_device_tokens_update_own on public.push_device_tokens
 drop policy if exists push_device_tokens_delete_own on public.push_device_tokens;
 create policy push_device_tokens_delete_own on public.push_device_tokens
   for delete to authenticated using (user_id = auth.uid());
+
+-- ============================================================================
+-- 12. Multiple forms per area assignment. Admin can attach any subset of the
+--     admin's Google Forms to an area (instead of just one override), with the
+--     starred/default form pre-checked. forms_customized distinguishes "admin
+--     never touched this" (fall back to the single form_id/form_url override,
+--     then the global default) from "admin explicitly picked a set" (use
+--     exactly these rows, even if they chose zero).
+-- ============================================================================
+alter table public.assignments
+  add column if not exists forms_customized boolean not null default false;
+
+create table if not exists public.assignment_forms (
+  id            uuid primary key default gen_random_uuid(),
+  assignment_id uuid not null references public.assignments (id) on delete cascade,
+  form_id       text not null,
+  form_title    text not null,
+  form_url      text not null,
+  created_at    timestamptz not null default now(),
+  unique (assignment_id, form_id)
+);
+create index if not exists assignment_forms_assignment_id_idx
+  on public.assignment_forms (assignment_id);
+
+alter table public.assignment_forms enable row level security;
+
+drop policy if exists "assignment_forms admin all" on public.assignment_forms;
+create policy "assignment_forms admin all"
+  on public.assignment_forms for all
+  using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "assignment_forms read own" on public.assignment_forms;
+create policy "assignment_forms read own"
+  on public.assignment_forms for select
+  using (
+    exists (
+      select 1 from public.assignments a
+      where a.id = assignment_forms.assignment_id and a.user_id = auth.uid()
+    )
+  );

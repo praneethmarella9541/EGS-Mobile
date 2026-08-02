@@ -18,11 +18,12 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { NearbyPlacePicker, type PlacePick } from '../../components/NearbyPlacePicker';
 import { DictationNotesField } from '../../components/DictationNotesField';
+import { ChooseFormSheet, type ChooseableForm } from '../../components/ChooseFormSheet';
 import { Colors } from '../../constants/colors';
 import { getCurrentPosition } from '../../lib/geo';
 import { createVisit } from '../../lib/visits';
-import { resolveAssignmentForm } from '../../lib/settings';
-import type { Assignment } from '../../lib/types';
+import { getAssignmentById } from '../../lib/assignments';
+import { resolveAssignmentForms } from '../../lib/settings';
 
 /**
  * Field user logs one specific place within their assigned area: they fetch
@@ -33,18 +34,19 @@ import type { Assignment } from '../../lib/types';
 export default function VisitNewScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { assignmentId, areaLabel, assignedDate, formId, formUrl } = useLocalSearchParams<{
+  const { assignmentId, areaLabel } = useLocalSearchParams<{
     assignmentId: string;
     areaLabel: string;
     assignedDate: string;
-    formId?: string;
-    formUrl?: string;
   }>();
 
   const [place, setPlace] = useState<PlacePick | null>(null);
   const [notes, setNotes] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  // Non-null (2+) after logging a visit whose area has multiple forms attached
+  // — the ChooseFormSheet lets the user pick one to open right away.
+  const [chooseForms, setChooseForms] = useState<ChooseableForm[] | null>(null);
 
   async function takePhoto() {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -90,19 +92,12 @@ export default function VisitNewScreen() {
       return Alert.alert('Name this place', 'The place name can\'t be empty.');
     }
 
-    const assignment: Assignment = {
-      id: assignmentId,
-      user_id: '',
-      assigned_date: assignedDate,
-      area_label: areaLabel,
-      form_id: formId || null,
-      form_url: formUrl || null,
-      created_by: '',
-      created_at: '',
-    };
-
     setSaving(true);
     try {
+      // Fetch the assignment fresh (rather than trusting route params) so we
+      // get its up-to-date attached forms, not just what was true when this
+      // screen was opened.
+      const assignment = await getAssignmentById(assignmentId);
       // Re-read GPS rather than reusing the fix the place was fetched with —
       // that's what makes the geofence check below mean anything.
       const device = await getCurrentPosition();
@@ -121,16 +116,20 @@ export default function VisitNewScreen() {
         gpsAccuracyM: place.gpsAccuracyM ?? device.accuracyM,
         fetchedAt: place.fetchedAt,
       });
-      const field = await resolveAssignmentForm(assignment);
-      if (field) {
+      const fields = await resolveAssignmentForms(assignment);
+      if (fields.length === 1) {
         router.replace({
           pathname: '/(workspace)/form-view',
-          params: { url: field.url, title: place.label },
+          params: { url: fields[0].url, title: place.label },
         } as any);
-      } else {
+      } else if (fields.length === 0) {
         Alert.alert('Visit logged', 'No field form is set yet — ask your admin to set one in the Forms tab.', [
           { text: 'OK', onPress: () => router.back() },
         ]);
+      } else {
+        // Multiple forms attached to this area — let the user pick one to
+        // open now; the rest (and this one) stay available on the task list.
+        setChooseForms(fields);
       }
     } catch (e: any) {
       Alert.alert('Could not log visit', e?.message ?? 'Please try again.');
@@ -140,6 +139,7 @@ export default function VisitNewScreen() {
   }
 
   return (
+    <>
     <KeyboardAvoidingView
       style={[styles.container, { paddingTop: insets.top }]}
       behavior="padding"
@@ -195,6 +195,23 @@ export default function VisitNewScreen() {
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
+
+    <ChooseFormSheet
+      visible={chooseForms !== null}
+      forms={chooseForms ?? []}
+      onPick={(f) => {
+        setChooseForms(null);
+        router.replace({
+          pathname: '/(workspace)/form-view',
+          params: { url: f.url, title: place?.label ?? '' },
+        } as any);
+      }}
+      onClose={() => {
+        setChooseForms(null);
+        router.replace('/(workspace)/tasks' as any);
+      }}
+    />
+    </>
   );
 }
 

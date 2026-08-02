@@ -25,14 +25,26 @@ export async function setFieldForm(formId: string, url: string): Promise<void> {
   if (error) throw error;
 }
 
-/** The form to use for an area: its own override if the admin set one, else the global default. */
-export async function resolveAssignmentForm(
-  assignment: Pick<Assignment, 'form_id' | 'form_url'>
-): Promise<{ id: string; url: string } | null> {
-  if (assignment.form_id && assignment.form_url) {
-    return { id: assignment.form_id, url: assignment.form_url };
+/**
+ * The form(s) to open for an area:
+ *  - if the admin explicitly picked a set via the multi-select (forms_customized),
+ *    that exact set — even if empty, no fallback.
+ *  - else the legacy single override (form_id/form_url), if set.
+ *  - else the global default field form.
+ */
+export async function resolveAssignmentForms(
+  assignment: Pick<Assignment, 'form_id' | 'form_url' | 'forms_customized'> & {
+    forms?: Assignment['forms'];
   }
-  return getFieldForm();
+): Promise<{ id: string; url: string; title: string }[]> {
+  if (assignment.forms_customized) {
+    return (assignment.forms ?? []).map((f) => ({ id: f.form_id, url: f.form_url, title: f.form_title }));
+  }
+  if (assignment.form_id && assignment.form_url) {
+    return [{ id: assignment.form_id, url: assignment.form_url, title: '' }];
+  }
+  const def = await getFieldForm();
+  return def ? [{ id: def.id, url: def.url, title: '' }] : [];
 }
 
 /**

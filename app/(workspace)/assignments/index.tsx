@@ -7,15 +7,16 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
-  Modal,
   TextInput,
   Platform,
   RefreshControl,
+  Keyboard,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { FormSheet } from '../../../components/FormSheet';
 import { ScreenHeader } from '../../../components/ScreenHeader';
-import { FormPicker } from '../../../components/FormPicker';
+import { MultiFormPicker } from '../../../components/MultiFormPicker';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
 import {
@@ -31,8 +32,11 @@ import { getFieldForm } from '../../../lib/settings';
 import { notifyAssignmentCreated } from '../../../lib/notify';
 import type { Assignment } from '../../../lib/types';
 
-type AreaRow = { areaLabel: string; form: { id: string; title: string; url: string } | null };
-const emptyAreaRow = (): AreaRow => ({ areaLabel: '', form: null });
+type AreaFormSel = { id: string; title: string; url: string };
+// forms === null → not customized (defaults to the starred field form at read
+// time); an array (even empty) → the admin explicitly picked this exact set.
+type AreaRow = { areaLabel: string; forms: AreaFormSel[] | null };
+const emptyAreaRow = (): AreaRow => ({ areaLabel: '', forms: null });
 
 export default function AssignmentsScreen() {
   const { isAdmin } = useAuth();
@@ -46,8 +50,8 @@ export default function AssignmentsScreen() {
   const [formUser, setFormUser] = useState<AssignableUser | null>(null);
   const [areas, setAreas] = useState<AreaRow[]>([emptyAreaRow()]);
   const [saving, setSaving] = useState(false);
-  const [formPickerRow, setFormPickerRow] = useState<number | null>(null);
-  const [resolvingFormRow, setResolvingFormRow] = useState<number | null>(null);
+  const [multiFormPickerRow, setMultiFormPickerRow] = useState<number | null>(null);
+  const [resolvingFormsRow, setResolvingFormsRow] = useState<number | null>(null);
   // The global "field form" (starred default) — shown on areas with no override.
   const [defaultForm, setDefaultForm] = useState<{ id: string; title: string } | null>(null);
 
@@ -137,21 +141,32 @@ export default function AssignmentsScreen() {
     setAreas((prev) => (prev.length === 1 ? prev : prev.filter((_, idx) => idx !== i)));
   }
 
-  async function pickAreaForm(i: number, form: FormListItem) {
-    setResolvingFormRow(i);
-    try {
-      const { uri } = await formsApi.responderUri(form.id);
-      setAreas((prev) =>
-        prev.map((a, idx) => (idx === i ? { ...a, form: { id: form.id, title: form.title, url: uri } } : a))
-      );
-    } catch (e: any) {
-      Alert.alert('Error', e?.message ?? 'Could not load that form’s link');
-    } finally {
-      setResolvingFormRow(null);
-    }
+  /** Dismiss the area-label keyboard before opening the picker — it should only
+   *  reappear if the admin taps the picker's own search field. */
+  function openMultiFormPicker(i: number) {
+    Keyboard.dismiss();
+    setMultiFormPickerRow(i);
   }
-  function clearAreaForm(i: number) {
-    setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, form: null } : a)));
+
+  /** Resolve each checked form's public responder URL (cache first, then a per-form call) and store the set on the row. */
+  async function confirmAreaForms(i: number, selected: FormListItem[]) {
+    setResolvingFormsRow(i);
+    try {
+      const cache = await formsApi.cachedResponderUris();
+      const resolved = await Promise.all(
+        selected.map(async (f): Promise<AreaFormSel> => {
+          const cached = cache[f.id];
+          if (cached) return { id: f.id, title: f.title, url: cached };
+          const { uri } = await formsApi.responderUri(f.id);
+          return { id: f.id, title: f.title, url: uri };
+        })
+      );
+      setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, forms: resolved } : a)));
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Could not load form links');
+    } finally {
+      setResolvingFormsRow(null);
+    }
   }
 
   async function save() {
@@ -163,7 +178,7 @@ export default function AssignmentsScreen() {
       const { created, failed } = await createAssignments({
         userId: formUser.id,
         dateKey,
-        items: items.map((a) => ({ areaLabel: a.areaLabel, form: a.form })),
+        items: items.map((a) => ({ areaLabel: a.areaLabel, forms: a.forms })),
       });
       // Best-effort push to the assigned user, naming the area(s) that saved.
       const failedLabels = new Set(failed.map((f) => f.areaLabel));
@@ -297,6 +312,13 @@ export default function AssignmentsScreen() {
                         <Text style={styles.assignArea} numberOfLines={2}>
                           {a.area_label}
                         </Text>
+                        {a.forms_customized && (
+                          <Text style={styles.assignFormsNote} numberOfLines={1}>
+                            {a.forms && a.forms.length > 0
+                              ? `Forms: ${a.forms.map((f) => f.form_title).join(', ')}`
+                              : 'No form attached'}
+                          </Text>
+                        )}
                       </View>
                       <TouchableOpacity onPress={() => confirmDelete(a)} hitSlop={8}>
                         <Ionicons name="trash-outline" size={18} color={Colors.error} />
@@ -311,8 +333,7 @@ export default function AssignmentsScreen() {
       )}
 
       {/* Add-assignment modal */}
-      <Modal visible={!!formUser} animationType="slide" transparent onRequestClose={() => setFormUser(null)}>
-        <View style={styles.modalBackdrop}>
+      <FormSheet visible={!!formUser} onRequestClose={() => setFormUser(null)}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
@@ -350,24 +371,32 @@ export default function AssignmentsScreen() {
                     The user will pick their exact place(s) within this area when they check in.
                   </Text>
 
-                  {resolvingFormRow === i ? (
+                  {resolvingFormsRow === i ? (
                     <View style={styles.formPickBtn}>
                       <ActivityIndicator size="small" color={Colors.primary} />
-                      <Text style={styles.formPickText}>Loading form…</Text>
+                      <Text style={styles.formPickText}>Loading form links…</Text>
                     </View>
-                  ) : area.form ? (
-                    <View style={styles.formChip}>
-                      <Ionicons name="document-text" size={16} color={Colors.primary} />
-                      <Text style={styles.formChipText} numberOfLines={1}>
-                        {area.form.title}
-                      </Text>
-                      <TouchableOpacity onPress={() => setFormPickerRow(i)} hitSlop={6}>
-                        <Text style={styles.formChipAction}>Change</Text>
+                  ) : area.forms !== null ? (
+                    <>
+                      {area.forms.length > 0 ? (
+                        <View style={styles.formsChipsWrap}>
+                          {area.forms.map((f) => (
+                            <View key={f.id} style={styles.formChip}>
+                              <Ionicons name="document-text" size={14} color={Colors.primary} />
+                              <Text style={styles.formChipText} numberOfLines={1}>
+                                {f.title}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : (
+                        <Text style={styles.hint}>No forms will be assigned for this area.</Text>
+                      )}
+                      <TouchableOpacity style={styles.formPickBtn} onPress={() => openMultiFormPicker(i)}>
+                        <Ionicons name="create-outline" size={16} color={Colors.primary} />
+                        <Text style={styles.formPickText}>Edit forms for this area</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={() => clearAreaForm(i)} hitSlop={6}>
-                        <Ionicons name="close-circle" size={18} color={Colors.textMuted} />
-                      </TouchableOpacity>
-                    </View>
+                    </>
                   ) : (
                     <>
                       {defaultForm && (
@@ -379,9 +408,9 @@ export default function AssignmentsScreen() {
                           <Text style={styles.defaultFormTag}>will be assigned</Text>
                         </View>
                       )}
-                      <TouchableOpacity style={styles.formPickBtn} onPress={() => setFormPickerRow(i)}>
-                        <Ionicons name="swap-horizontal-outline" size={16} color={Colors.primary} />
-                        <Text style={styles.formPickText}>Use a different form for this area</Text>
+                      <TouchableOpacity style={styles.formPickBtn} onPress={() => openMultiFormPicker(i)}>
+                        <Ionicons name="add-circle-outline" size={16} color={Colors.primary} />
+                        <Text style={styles.formPickText}>Add more forms for this area</Text>
                       </TouchableOpacity>
                     </>
                   )}
@@ -407,17 +436,31 @@ export default function AssignmentsScreen() {
                 )}
               </TouchableOpacity>
             </ScrollView>
-
-            <FormPicker
-              visible={formPickerRow !== null}
-              onClose={() => setFormPickerRow(null)}
-              onPick={(form) => {
-                if (formPickerRow !== null) void pickAreaForm(formPickerRow, form);
-              }}
-            />
           </View>
-        </View>
-      </Modal>
+      </FormSheet>
+
+      {/* Rendered at the screen root, NOT inside the assign FormSheet: nested
+          inside, its full-screen overlay was clipped to the sheet's card and it
+          shared the sheet's back handler, so dismissing the picker tore down the
+          whole assign flow. As a sibling it floats above the still-open sheet
+          and only closes itself — the sheet stays until Add area / close. */}
+      <MultiFormPicker
+        visible={multiFormPickerRow !== null}
+        onClose={() => setMultiFormPickerRow(null)}
+        initialSelectedIds={
+          multiFormPickerRow !== null && areas[multiFormPickerRow]
+            ? (areas[multiFormPickerRow].forms
+                ? areas[multiFormPickerRow].forms!.map((f) => f.id)
+                : defaultForm
+                  ? [defaultForm.id]
+                  : [])
+            : []
+        }
+        defaultFormId={defaultForm?.id ?? null}
+        onConfirm={(selected) => {
+          if (multiFormPickerRow !== null) void confirmAreaForms(multiFormPickerRow, selected);
+        }}
+      />
     </View>
   );
 }
@@ -441,7 +484,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
   },
   dateText: { flex: 1, fontSize: 15, fontWeight: '600', color: Colors.text },
-  list: { padding: 16, gap: 14 },
+  list: { padding: 16, paddingBottom: 40, gap: 14 },
   empty: { alignItems: 'center', gap: 8, paddingTop: 40 },
   emptyText: { fontSize: 14, color: Colors.textSecondary },
   userCard: {
@@ -485,6 +528,7 @@ const styles = StyleSheet.create({
   },
   assignNum: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, marginTop: 1 },
   assignArea: { fontSize: 14, color: Colors.text, fontWeight: '500' },
+  assignFormsNote: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: Colors.background,
@@ -501,7 +545,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   modalTitle: { fontSize: 17, fontWeight: '700', color: Colors.text, flex: 1 },
-  form: { paddingHorizontal: 20, paddingTop: 4, gap: 8 },
+  form: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 32, gap: 8 },
   rowBlock: {
     backgroundColor: Colors.surface,
     borderRadius: 14,
@@ -554,20 +598,20 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   formPickText: { fontSize: 13, color: Colors.primary, fontWeight: '600', flex: 1 },
+  formsChipsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   formChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
+    maxWidth: '100%',
     borderWidth: 1,
     borderColor: Colors.primary,
     borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
     backgroundColor: Colors.primaryLight,
-    marginTop: 8,
   },
-  formChipText: { flex: 1, fontSize: 13, color: Colors.text, fontWeight: '500' },
-  formChipAction: { fontSize: 12, color: Colors.primary, fontWeight: '700' },
+  formChipText: { fontSize: 13, color: Colors.text, fontWeight: '500', flexShrink: 1 },
   defaultFormChip: {
     flexDirection: 'row',
     alignItems: 'center',

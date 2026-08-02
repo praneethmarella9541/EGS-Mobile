@@ -8,12 +8,15 @@ export type MatchableVisit = {
 };
 
 /**
- * Admin: every location_visit that plausibly used the given form — either an
- * area's own form override (assignments.form_id = formId), or a visit whose
- * area had no override and formId is the current global field form. Used to
- * build "verified" who/where/when columns in the Responses view, sourced
- * entirely from our own tamper-proof records instead of anything written into
- * the Google Form (see lib/visit-match.ts#matchVisitsToResponses).
+ * Admin: every location_visit that plausibly used the given form. Three cases,
+ * matching lib/settings.ts#resolveAssignmentForms:
+ *  - area was explicitly given a multi-form set (forms_customized) → formId is
+ *    among its attached assignment_forms;
+ *  - area has the legacy single override (form_id) → formId equals it;
+ *  - area was never customized → formId is the current global field form.
+ * Used to build "verified" who/where/when columns in the Responses view,
+ * sourced entirely from our own tamper-proof records instead of anything
+ * written into the Google Form (see lib/visit-match.ts#matchVisitsToResponses).
  *
  * Note: uses the *current* global field form setting — if it was changed
  * since some of these visits were logged, older visits may be mismatched.
@@ -33,13 +36,20 @@ export async function listVisitsForForm(formId: string, sinceDays = 90): Promise
 
   const { data, error } = await supabase
     .from('location_visits')
-    .select('id, user_id, place_label, submitted_at, assignment:assignments(form_id)')
+    .select(
+      'id, user_id, place_label, submitted_at, ' +
+        'assignment:assignments(form_id, forms_customized, forms:assignment_forms(form_id))'
+    )
     .gte('submitted_at', since.toISOString())
     .order('submitted_at', { ascending: true });
   if (error) throw error;
 
   const rows = (data ?? []).filter((r: any) => {
-    const rowFormId = r.assignment?.form_id ?? null;
+    const a = r.assignment;
+    if (a?.forms_customized) {
+      return (a.forms ?? []).some((f: any) => f.form_id === formId);
+    }
+    const rowFormId = a?.form_id ?? null;
     return rowFormId ? rowFormId === formId : formId === defaultFormId;
   });
 

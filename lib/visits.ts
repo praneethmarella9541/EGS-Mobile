@@ -9,7 +9,6 @@ import {
   type Assignment,
   type LocationVisit,
   type VisitPhoto,
-  type AssignmentWithVisits,
   type AdminAssignmentRow,
   type PlaceSource,
 } from './types';
@@ -256,16 +255,27 @@ export async function getPhotoUrl(photoPath: string | null | undefined): Promise
 }
 
 /**
- * Admin: every area assignment for a date, with its visits + assignee — includes no-shows.
- * `assignments.user_id` has no FK to `profiles` (both reference `auth.users`
- * independently), so PostgREST can't embed `profiles` directly — join it client-side.
+ * Admin: every area assignment whose date falls within [from, to] (inclusive),
+ * with its visits + assignee — includes no-shows. Optionally narrowed to one
+ * user. `assignments.user_id` has no FK to `profiles` (both reference
+ * `auth.users` independently), so PostgREST can't embed `profiles` directly —
+ * join it client-side.
  */
-export async function listAdminAssignmentsForDate(dateKey: string): Promise<AdminAssignmentRow[]> {
-  const { data, error } = await supabase
+export async function listAdminAssignments(range: {
+  from: string;
+  to: string;
+  userId?: string;
+}): Promise<AdminAssignmentRow[]> {
+  let query = supabase
     .from('assignments')
     .select('*, visits:location_visits(*, photos:visit_photos(*))')
-    .eq('assigned_date', dateKey)
+    .gte('assigned_date', range.from)
+    .lte('assigned_date', range.to)
+    .order('assigned_date', { ascending: false })
     .order('created_at', { ascending: true });
+  if (range.userId) query = query.eq('user_id', range.userId);
+
+  const { data, error } = await query;
   if (error) throw error;
 
   const rows = (data ?? []).map((row: any) => ({ ...row, visits: sortVisits(row.visits ?? []) }));
@@ -282,19 +292,4 @@ export async function listAdminAssignmentsForDate(dateKey: string): Promise<Admi
   }
 
   return rows.map((row) => ({ ...row, profile: profileById.get(row.user_id) ?? null }));
-}
-
-/** Admin: one user's area-assignment/visit history, most recent first. */
-export async function listAdminAssignmentsForUser(
-  userId: string,
-  limit = 30
-): Promise<AssignmentWithVisits[]> {
-  const { data, error } = await supabase
-    .from('assignments')
-    .select('*, visits:location_visits(*, photos:visit_photos(*))')
-    .eq('user_id', userId)
-    .order('assigned_date', { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return (data ?? []).map((row: any) => ({ ...row, visits: sortVisits(row.visits ?? []) }));
 }

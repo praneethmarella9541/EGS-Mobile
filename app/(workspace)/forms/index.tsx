@@ -7,7 +7,6 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
-  Modal,
   TextInput,
   RefreshControl,
   Platform,
@@ -17,6 +16,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { format } from 'date-fns';
+import { FormSheet } from '../../../components/FormSheet';
 import { ScreenHeader } from '../../../components/ScreenHeader';
 import { useAuth } from '../../../hooks/useAuth';
 import { Colors } from '../../../constants/colors';
@@ -300,29 +300,32 @@ export default function FormsScreen() {
         </>
       )}
 
-      <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>New form</Text>
-            <TextInput
-              style={styles.input}
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Form title"
-              placeholderTextColor={Colors.textMuted}
-              autoFocus
-            />
-            <View style={styles.modalBtns}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowCreate(false)}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.createBtn, creating && { opacity: 0.6 }]} onPress={create} disabled={creating}>
-                {creating ? <ActivityIndicator color="#fff" /> : <Text style={styles.createText}>Create</Text>}
-              </TouchableOpacity>
-            </View>
+      <FormSheet
+        visible={showCreate}
+        onRequestClose={() => setShowCreate(false)}
+        justify="center"
+        backdropStyle={{ alignItems: 'center', padding: 28 }}
+      >
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>New form</Text>
+          <TextInput
+            style={styles.input}
+            value={title}
+            onChangeText={setTitle}
+            placeholder="Form title"
+            placeholderTextColor={Colors.textMuted}
+            autoFocus
+          />
+          <View style={styles.modalBtns}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowCreate(false)}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.createBtn, creating && { opacity: 0.6 }]} onPress={create} disabled={creating}>
+              {creating ? <ActivityIndicator color="#fff" /> : <Text style={styles.createText}>Create</Text>}
+            </TouchableOpacity>
           </View>
         </View>
-      </Modal>
+      </FormSheet>
     </View>
   );
 }
@@ -332,7 +335,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   locked: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
   lockedTitle: { fontSize: 17, fontWeight: '700', color: Colors.text },
-  list: { padding: 16, gap: 12 },
+  list: { padding: 16, paddingBottom: 40, gap: 12 },
   contextRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -220,7 +220,7 @@ export function responsesToCsv(
     ...(hasEmail ? ['Email'] : []),
     ...(hasScore ? ['Score'] : []),
     ...(verifiedByResponseId
-      ? ['Submitted by (verified)', 'Location (verified)', 'Visit date (verified)']
+      ? ['Submitted by (verified)', 'Location (verified)', 'Visit date and time (verified)']
       : []),
     ...questionIds.map((id) => titles.get(id) || id),
   ];
@@ -233,7 +233,7 @@ export function responsesToCsv(
         ? [
             verified?.userLabel ?? '',
             verified?.placeLabel ?? '',
-            verified ? new Date(verified.submittedAt).toLocaleDateString() : '',
+            verified ? new Date(verified.submittedAt).toLocaleString() : '',
           ]
         : []),
       ...questionIds.map((qId) => {

@@ -5,6 +5,7 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-nati
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/colors';
+import { APP_VERSION } from '../../constants/version';
 import { useAuth } from '../../hooks/useAuth';
 import { BrandLogo } from '../../components/BrandLogo';
 
@@ -97,14 +98,11 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         })}
       </ScrollView>
 
-      <TouchableOpacity
-        style={[styles.signOut, { marginBottom: insets.bottom + 12 }]}
-        onPress={signOut}
-        activeOpacity={0.8}
-      >
+      <TouchableOpacity style={styles.signOut} onPress={signOut} activeOpacity={0.8}>
         <Ionicons name="log-out-outline" size={20} color={Colors.sidebarText} />
         <Text style={styles.signOutText}>Sign out</Text>
       </TouchableOpacity>
+      <Text style={[styles.versionText, { marginBottom: insets.bottom + 12 }]}>v{APP_VERSION}</Text>
     </View>
   );
 }
@@ -181,4 +179,11 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.08)',
   },
   signOutText: { color: Colors.sidebarText, fontSize: 15, fontWeight: '500' },
+  versionText: {
+    color: Colors.sidebarText,
+    opacity: 0.5,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 8,
+  },
 });
