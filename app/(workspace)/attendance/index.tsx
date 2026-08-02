@@ -77,6 +77,34 @@ function visitSpan(
   return { first, last, minutes, durationLabel: minutes <= 0 ? null : `${formatDuration(minutes)} span` };
 }
 
+/**
+ * Total time-on-site across the filtered rows, for the "Total hours" stat.
+ * Deliberately NOT a sum of each area's own visitSpan — that under-counts,
+ * since a single-visit area contributes zero (no span within itself) even
+ * though that timestamp is a real point in the person's day, and it ignores
+ * the time between visiting different areas. Instead, group by (user, day)
+ * across ALL their areas and take last − first over the combined set — a
+ * user with one visit total that day has no span to compute (contributes 0,
+ * correctly — a single instant has no duration), but one with several areas
+ * spread across the day gets the real end-to-end span.
+ */
+function totalActiveMinutes(rows: AdminAssignmentRow[]): number {
+  const byUserDay = new Map<string, number[]>();
+  for (const r of rows) {
+    if (r.visits.length === 0) continue;
+    const key = `${r.user_id}|${r.assigned_date}`;
+    const times = byUserDay.get(key) ?? [];
+    for (const v of r.visits) times.push(new Date(v.submitted_at).getTime());
+    byUserDay.set(key, times);
+  }
+  let total = 0;
+  for (const times of byUserDay.values()) {
+    if (times.length < 2) continue;
+    total += Math.round((Math.max(...times) - Math.min(...times)) / 60000);
+  }
+  return total;
+}
+
 export default function AttendanceScreen() {
   const { isAdmin } = useAuth();
   const { width: screenWidth } = useWindowDimensions();
@@ -209,7 +237,7 @@ export default function AttendanceScreen() {
     const visited = rows.filter((r) => r.visits.length > 0).length;
     const totalVisits = rows.reduce((sum, r) => sum + r.visits.length, 0);
     const totalPhotos = rows.reduce((sum, r) => sum + photoCount(r), 0);
-    const totalMinutes = rows.reduce((sum, r) => sum + (visitSpan(r)?.minutes ?? 0), 0);
+    const totalMinutes = totalActiveMinutes(rows);
     return { totalAreas, visited, totalVisits, totalPhotos, totalMinutes };
   }, [rows]);
 

@@ -61,6 +61,27 @@ export async function getCurrentPosition(): Promise<{
   };
 }
 
+/**
+ * Best-effort, near-instant last-known device location — no fresh GPS
+ * acquisition, no permission prompt (only used if already granted). Purely to
+ * bias text search results toward "near me" so category queries like
+ * "preschools near me" actually rank nearby matches first, the way Google
+ * Maps' own search bar does. Never used for anything requiring accuracy or
+ * the visit's actual recorded location — returns null on any failure, and
+ * callers degrade to an unbiased search.
+ */
+export async function getLastKnownPosition(): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const { status } = await Location.getForegroundPermissionsAsync();
+    if (status !== 'granted') return null;
+    const pos = await Location.getLastKnownPositionAsync();
+    if (!pos) return null;
+    return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  } catch {
+    return null;
+  }
+}
+
 const MAPS_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? '';
 
 /** A place offered to the user after fetching their location. */
@@ -84,19 +105,28 @@ export type NearbyPlace = {
  * ever returns a postal address. Failures are non-fatal — callers fall back to
  * the reverse-geocoded address or to manual search.
  *
+ * Also what powers category "near me" search (see AddressAutocomplete) — Place
+ * Autocomplete cannot do this at all: it treats "near me" as literal text to
+ * match against place *names* rather than a proximity instruction, and even a
+ * hard 50km radius filter returns zero results for a category term in a
+ * smaller town. Nearby Search with a `keyword` is the actual right tool —
+ * confirmed it returns real, correctly-local results where Autocomplete could
+ * not return any.
+ *
  * `rankby=distance` is mutually exclusive with `radius` and requires a
  * type/keyword, hence `type=establishment` (the broadest one available).
  */
 export async function nearbyPlaces(
   at: { lat: number; lng: number },
-  signal?: AbortSignal
+  opts?: { keyword?: string; signal?: AbortSignal }
 ): Promise<NearbyPlace[]> {
   if (!MAPS_KEY) return [];
+  const keywordParam = opts?.keyword ? `&keyword=${encodeURIComponent(opts.keyword)}` : '';
   const url =
     `https://maps.googleapis.com/maps/api/place/nearbysearch/json` +
-    `?location=${at.lat},${at.lng}&rankby=distance&type=establishment` +
+    `?location=${at.lat},${at.lng}&rankby=distance&type=establishment${keywordParam}` +
     `&key=${MAPS_KEY}&language=en`;
-  const res = await fetch(url, { signal });
+  const res = await fetch(url, { signal: opts?.signal });
   const data = await res.json();
   if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
     console.warn('[places] nearbysearch', data.status, data.error_message);

@@ -3,7 +3,13 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator 
 import { Ionicons } from '@expo/vector-icons';
 import { AddressAutocomplete, type AddressPick } from './AddressAutocomplete';
 import { Colors } from '../constants/colors';
-import { getCurrentPosition, nearbyPlaces, reverseGeocode, type NearbyPlace } from '../lib/geo';
+import {
+  getCurrentPosition,
+  getLastKnownPosition,
+  nearbyPlaces,
+  reverseGeocode,
+  type NearbyPlace,
+} from '../lib/geo';
 import { GPS_ACCURACY_MAX_M, GPS_ACCURACY_WARN_M, type PlaceSource } from '../lib/types';
 
 /**
@@ -46,6 +52,10 @@ export function NearbyPlacePicker({ value, onChange }: Props) {
   const [accuracyM, setAccuracyM] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [manualText, setManualText] = useState('');
+  // Location bias for manual search ("preschools near me" etc.) — filled in
+  // from a real GPS fix if one was already taken, else a best-effort
+  // last-known position fetched silently when manual search is opened.
+  const [searchBias, setSearchBias] = useState<{ lat: number; lng: number } | null>(null);
   /** The label as fetched, to detect the user typing over it. */
   const originalLabel = useRef('');
   /** Provenance of the fix the current list was built from, stamped onto the pick. */
@@ -62,6 +72,9 @@ export function NearbyPlacePicker({ value, onChange }: Props) {
       const fix = await getCurrentPosition();
       const fetchedAt = new Date().toISOString();
       setAccuracyM(fix.accuracyM);
+      // Even a loose fix is fine as a search bias — it only needs to be in the
+      // right neighborhood, unlike the visit's actual recorded location.
+      setSearchBias({ lat: fix.lat, lng: fix.lng });
 
       if (fix.accuracyM !== null && fix.accuracyM > GPS_ACCURACY_MAX_M) {
         setError(
@@ -122,6 +135,30 @@ export function NearbyPlacePicker({ value, onChange }: Props) {
     });
     setManualText('');
     setMode('idle');
+  }
+
+  /**
+   * Switch to manual search, grabbing a location bias in the background if we
+   * don't already have one (e.g. skipped straight here without ever fetching
+   * GPS) — see AddressAutocomplete's `location` prop.
+   *
+   * Two-step: the cached last-known position lands almost instantly so search
+   * feels responsive right away, but it can be stale — sometimes from
+   * wherever the device last took a real fix, a different city entirely, with
+   * no visible error. So it's immediately followed by a real GPS read, which
+   * corrects the bias once it resolves (typically a couple of seconds).
+   */
+  function enterManualSearch() {
+    setMode('manual');
+    if (searchBias) return;
+    void getLastKnownPosition().then((pos) => {
+      if (pos) setSearchBias(pos);
+    });
+    getCurrentPosition()
+      .then((fix) => setSearchBias({ lat: fix.lat, lng: fix.lng }))
+      .catch(() => {
+        /* no permission / no fix — keep the last-known bias, if any */
+      });
   }
 
   function editLabel(text: string) {
@@ -189,7 +226,8 @@ export function NearbyPlacePicker({ value, onChange }: Props) {
           value={manualText}
           onChangeText={setManualText}
           onSelect={chooseManual}
-          placeholder="Search for the place…"
+          placeholder="Search for the place… e.g. preschools near me"
+          location={searchBias}
         />
         <TouchableOpacity onPress={() => setMode('idle')} style={styles.linkBtn}>
           <Ionicons name="locate-outline" size={15} color={Colors.primary} />
@@ -247,7 +285,7 @@ export function NearbyPlacePicker({ value, onChange }: Props) {
           ))}
         </View>
 
-        <TouchableOpacity onPress={() => setMode('manual')} style={styles.linkBtn}>
+        <TouchableOpacity onPress={enterManualSearch} style={styles.linkBtn}>
           <Ionicons name="search-outline" size={15} color={Colors.primary} />
           <Text style={styles.linkBtnText}>Not listed — search for it</Text>
         </TouchableOpacity>
@@ -280,7 +318,7 @@ export function NearbyPlacePicker({ value, onChange }: Props) {
       {error && <Text style={styles.error}>{error}</Text>}
 
       {mode !== 'fetching' && (
-        <TouchableOpacity onPress={() => setMode('manual')} style={styles.linkBtn}>
+        <TouchableOpacity onPress={enterManualSearch} style={styles.linkBtn}>
           <Ionicons name="search-outline" size={15} color={Colors.primary} />
           <Text style={styles.linkBtnText}>Search for the place instead</Text>
         </TouchableOpacity>
