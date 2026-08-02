@@ -11,7 +11,6 @@ import {
   TextInput,
   RefreshControl,
   Platform,
-  KeyboardAvoidingView,
   Switch,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -37,17 +36,22 @@ export default function FormsScreen() {
   const [settingId, setSettingId] = useState<string | null>(null);
   const [includeContext, setIncludeContextState] = useState(false);
   const [contextToggling, setContextToggling] = useState(false);
+  // Public responder URLs by form id (from public.forms) — lets copy-link skip
+  // the Google round-trip for app-created forms.
+  const [responderCache, setResponderCache] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
-      const [list, fieldForm, includeVisitContext] = await Promise.all([
+      const [list, fieldForm, includeVisitContext, responderMap] = await Promise.all([
         forms.list(),
         getFieldForm(),
         getIncludeVisitContext(),
+        forms.cachedResponderUris(),
       ]);
       setItems(list);
       setFieldFormId(fieldForm?.id ?? null);
       setIncludeContextState(includeVisitContext);
+      setResponderCache(responderMap);
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'Failed to load forms');
     } finally {
@@ -85,7 +89,14 @@ export default function FormsScreen() {
       const { form, titleWarning } = await forms.create(title.trim());
       setShowCreate(false);
       setTitle('');
-      await load();
+      // Optimistic: show the new form immediately instead of refetching the
+      // entire Drive forms list (that list-all call is the delay). It also
+      // refreshes on focus when returning from the editor.
+      setItems((prev) => [
+        { id: form.id, title: form.title, modifiedTime: new Date().toISOString() },
+        ...prev,
+      ]);
+      setResponderCache((prev) => ({ ...prev, [form.id]: form.responder_uri }));
       if (titleWarning) {
         Alert.alert('Title may not show correctly', `Google rejected setting the Drive file name: ${titleWarning}`);
       }
@@ -104,9 +115,17 @@ export default function FormsScreen() {
 
   async function copyLink(form: FormListItem) {
     try {
+      // Fast path: use the cached public URL (no Google call) if we have it.
+      const cached = responderCache[form.id];
+      if (cached) {
+        await Clipboard.setStringAsync(cached);
+        Alert.alert('Copied', 'Responder link copied.');
+        return;
+      }
       const { uri, shareWarning } = await forms.responderUri(form.id);
       if (!uri) throw new Error('No responder link found.');
       await Clipboard.setStringAsync(uri);
+      setResponderCache((prev) => ({ ...prev, [form.id]: uri }));
       if (shareWarning) {
         Alert.alert(
           'Copied, but may need sign-in',
@@ -121,12 +140,18 @@ export default function FormsScreen() {
   }
 
   async function makeFieldForm(form: FormListItem) {
+    // Shift the star immediately (optimistic) — the actual work (responder link,
+    // public sharing, no-login prep, DB write) makes several Google round-trips
+    // and would otherwise leave the star "stuck" on the old form until it's done.
+    const prevId = fieldFormId;
+    if (prevId === form.id) return;
+    setFieldFormId(form.id);
     setSettingId(form.id);
     try {
       const { uri, shareWarning } = await forms.responderUri(form.id);
       if (!uri) throw new Error('No responder link found.');
+      setResponderCache((prev) => ({ ...prev, [form.id]: uri }));
       await setFieldForm(form.id, uri);
-      setFieldFormId(form.id);
       if (shareWarning) {
         Alert.alert(
           'Set, but may need sign-in',
@@ -134,6 +159,7 @@ export default function FormsScreen() {
         );
       }
     } catch (e: any) {
+      setFieldFormId(prevId); // revert the star on failure
       Alert.alert('Error', e?.message ?? 'Could not set as field form');
     } finally {
       setSettingId(null);
@@ -160,10 +186,17 @@ export default function FormsScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
+          // Optimistic: remove it from the list immediately, delete in the
+          // background, and restore it if the delete fails.
+          const prevItems = items;
+          const prevFieldFormId = fieldFormId;
+          setItems((prev) => prev.filter((f) => f.id !== form.id));
+          if (fieldFormId === form.id) setFieldFormId(null);
           try {
             await forms.remove(form.id);
-            await load();
           } catch (e: any) {
+            setItems(prevItems);
+            setFieldFormId(prevFieldFormId);
             Alert.alert('Error', e?.message ?? 'Delete failed');
           }
         },
@@ -188,25 +221,9 @@ export default function FormsScreen() {
         </View>
       ) : (
         <>
-          <View style={styles.contextRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.contextTitle}>Verified visit details</Text>
-              <Text style={styles.contextSub}>
-                Shows who, which location, and when — from the app's own records, not editable in the
-                form — alongside each response.
-              </Text>
-            </View>
-            {contextToggling ? (
-              <ActivityIndicator color={Colors.primary} />
-            ) : (
-              <Switch
-                value={includeContext}
-                onValueChange={toggleIncludeContext}
-                trackColor={{ false: Colors.border, true: Colors.primaryLight }}
-                thumbColor={includeContext ? Colors.primary : undefined}
-              />
-            )}
-          </View>
+          {/* "Verified visit details" toggle intentionally hidden from the UI.
+              The setting itself is untouched — its stored value still drives the
+              Responses view (see FormResponsesTab / getIncludeVisitContext). */}
           <FlatList
           data={items}
           keyExtractor={(f) => f.id}
@@ -253,20 +270,19 @@ export default function FormsScreen() {
               </TouchableOpacity>
               <View style={styles.actions}>
                 <TouchableOpacity
-                  style={styles.actionBtn}
+                  style={[styles.actionBtn, settingId === item.id && { opacity: 0.5 }]}
                   onPress={() => makeFieldForm(item)}
                   disabled={settingId === item.id || fieldFormId === item.id}
                   accessibilityLabel={fieldFormId === item.id ? 'Field form' : 'Set as field form'}
                 >
-                  {settingId === item.id ? (
-                    <ActivityIndicator size="small" color={Colors.primary} />
-                  ) : (
-                    <Ionicons
-                      name={fieldFormId === item.id ? 'star' : 'star-outline'}
-                      size={20}
-                      color={fieldFormId === item.id ? Colors.primary : Colors.textSecondary}
-                    />
-                  )}
+                  {/* Star reflects the (optimistic) selection immediately; the
+                      background sharing/prep work just dims the button, so the
+                      star shifts instantly instead of hiding behind a spinner. */}
+                  <Ionicons
+                    name={fieldFormId === item.id ? 'star' : 'star-outline'}
+                    size={20}
+                    color={fieldFormId === item.id ? Colors.primary : Colors.textSecondary}
+                  />
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.actionBtn} onPress={() => copyLink(item)} accessibilityLabel="Copy link">
                   <Ionicons name="link-outline" size={20} color={Colors.textSecondary} />
@@ -285,7 +301,7 @@ export default function FormsScreen() {
       )}
 
       <Modal visible={showCreate} transparent animationType="fade" onRequestClose={() => setShowCreate(false)}>
-        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>New form</Text>
             <TextInput
@@ -305,7 +321,7 @@ export default function FormsScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </View>
   );

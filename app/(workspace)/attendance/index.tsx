@@ -24,12 +24,39 @@ import { listAssignableUsers, toDateKey, type AssignableUser } from '../../../li
 import {
   listAdminAssignmentsForDate,
   listAdminAssignmentsForUser,
-  getPhotoUrl,
+  getPhotoUrls,
   downloadPhotoToGallery,
 } from '../../../lib/visits';
 import type { AdminAssignmentRow, AssignmentWithVisits, LocationVisit } from '../../../lib/types';
 
 type ViewMode = 'date' | 'user';
+
+/**
+ * How much to trust a visit's place, in one line. Since the place is normally
+ * derived from the user's GPS fix, distance_m is near-zero by construction and
+ * says little — what matters is how the place was obtained, how good the fix
+ * was, and how long the user sat on it before submitting.
+ */
+function visitProvenance(v: LocationVisit): string {
+  const parts: string[] = [];
+
+  if (v.place_source === 'nearby') parts.push('auto-picked');
+  else if (v.place_source === 'reverse_geocode') parts.push('address at GPS');
+  else if (v.place_source === 'manual_search') parts.push('⚠ hand-searched');
+  else parts.push(`${v.distance_m}m from address`); // pre-GPS-flow visit
+
+  if (v.label_edited) parts.push('name edited');
+  if (v.gps_accuracy_m !== null) parts.push(`±${Math.round(v.gps_accuracy_m)}m`);
+
+  if (v.fetched_at) {
+    const gapMin = Math.round(
+      (new Date(v.submitted_at).getTime() - new Date(v.fetched_at).getTime()) / 60000
+    );
+    if (gapMin >= 10) parts.push(`⚠ submitted ${gapMin}m after fetch`);
+  }
+
+  return parts.join(' · ');
+}
 
 export default function AttendanceScreen() {
   const { isAdmin } = useAuth();
@@ -108,7 +135,7 @@ export default function AttendanceScreen() {
 
   async function viewPhotos(visit: LocationVisit) {
     if (visit.photos.length === 0) return;
-    const urls = await Promise.all(visit.photos.map((p) => getPhotoUrl(p.photo_path)));
+    const urls = await getPhotoUrls(visit.photos.map((p) => p.photo_path));
     setGalleryIndex(0);
     setGallery(urls.filter((u): u is string => !!u));
   }
@@ -173,7 +200,7 @@ export default function AttendanceScreen() {
             </Text>
           ) : null}
           <Text style={styles.visitTime}>
-            {format(new Date(v.submitted_at), 'MMM d, h:mm a')} · {v.distance_m}m from address
+            {format(new Date(v.submitted_at), 'MMM d, h:mm a')} · {visitProvenance(v)}
           </Text>
         </View>
         {v.photos.length > 0 && (
@@ -313,12 +340,15 @@ export default function AttendanceScreen() {
           value={date}
           mode="date"
           display={Platform.OS === 'ios' ? 'inline' : 'default'}
-          onChange={(_e, selected) => {
+          onChange={(e, selected) => {
             setShowPicker(false);
-            if (selected) {
-              setLoading(true);
-              setDate(selected);
-            }
+            // Android fires 'dismissed' (tap-away / Cancel) with the current date —
+            // ignore it, and ignore re-picking the same day, so we never flip into
+            // a loading state that has nothing to reload (was: infinite spinner).
+            if (e.type !== 'set' || !selected) return;
+            if (toDateKey(selected) === dateKey) return;
+            setLoading(true);
+            setDate(selected);
           }}
         />
       )}

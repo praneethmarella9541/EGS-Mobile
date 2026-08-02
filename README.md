@@ -1,4 +1,4 @@
-# EGS CRM — Mobile
+# The Nucleus - Marketing — Mobile
 
 A mobile-first CRM built with Expo (React Native) + Supabase. Theme and auth
 patterns are adapted from the Placecom workspace app: a warm copper / ink

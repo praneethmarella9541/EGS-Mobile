@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "240380539397",
+    "project_id": "egs-crm",
+    "storage_bucket": "egs-crm.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:240380539397:android:46cb3452ddd8beb353226c",
+        "android_client_info": {
+          "package_name": "com.thenucleus.crm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDYULNF1ItVU1v7Hc7E0dsnab7jVyaW1J0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

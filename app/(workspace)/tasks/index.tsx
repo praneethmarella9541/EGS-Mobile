@@ -121,12 +121,15 @@ export default function TasksScreen() {
           value={date}
           mode="date"
           display={Platform.OS === 'ios' ? 'inline' : 'default'}
-          onChange={(_e, selected) => {
+          onChange={(e, selected) => {
             setShowPicker(false);
-            if (selected) {
-              setLoading(true);
-              setDate(selected);
-            }
+            // Android fires 'dismissed' (tap-away / Cancel) with the current date —
+            // ignore it, and ignore re-picking the same day, so we never flip into
+            // a loading state that has nothing to reload (was: infinite spinner).
+            if (e.type !== 'set' || !selected) return;
+            if (toDateKey(selected) === dateKey) return;
+            setLoading(true);
+            setDate(selected);
           }}
         />
       )}
@@ -156,7 +159,11 @@ export default function TasksScreen() {
             </View>
           ) : (
             areas.map((area, i) => {
-              const expired = area.assigned_date !== todayKey;
+              // Only "today" is actionable. Past days are expired; future days
+              // are locked but simply not reached yet — not "expired".
+              const isFuture = area.assigned_date > todayKey;
+              const isPast = area.assigned_date < todayKey;
+              const locked = isFuture || isPast;
               return (
                 <View key={area.id} style={styles.card}>
                   <View style={styles.cardHeader}>
@@ -219,11 +226,17 @@ export default function TasksScreen() {
                     );
                   })}
 
-                  {expired ? (
+                  {locked ? (
                     <View style={styles.lockedForm}>
-                      <Ionicons name="time-outline" size={14} color={Colors.textMuted} />
+                      <Ionicons
+                        name={isFuture ? 'lock-closed-outline' : 'time-outline'}
+                        size={14}
+                        color={Colors.textMuted}
+                      />
                       <Text style={styles.lockedFormText}>
-                        Expired — this area was only assigned on {area.assigned_date}
+                        {isFuture
+                          ? `Upcoming — The area is assigned for ${area.assigned_date}`
+                          : `Expired — The area was assigned on ${area.assigned_date}`}
                       </Text>
                     </View>
                   ) : (

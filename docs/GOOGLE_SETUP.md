@@ -45,9 +45,16 @@ Supabase performs the OAuth handshake, so you need a **Web application** client
 3. **Authentication → URL Configuration → Redirect URLs** → add:
    ```
    egscrm://auth/callback
+   http://localhost:3000/auth/callback
+   https://<your-vercel-domain>/auth/callback
    ```
-   (Also add your Expo dev URL, e.g. `exp://…/--/auth/callback`, when testing in
-   Expo Go.)
+   The first is the mobile app; the last two are the admin web console in
+   `web/` (local dev and production). Also add your Expo dev URL, e.g.
+   `exp://…/--/auth/callback`, when testing in Expo Go.
+
+   No change is needed in Google Cloud for the web console — its authorized
+   redirect URI stays `https://<PROJECT-REF>.supabase.co/auth/v1/callback`,
+   because Supabase performs the final hop back to whichever app started the flow.
 
 ## 5. Supabase Edge Function secrets
 
@@ -69,7 +76,10 @@ automatically — don't set those.
    ```bash
    supabase functions deploy google-link
    supabase functions deploy admin-users
+   supabase functions deploy gcs-sign
    ```
+   `gcs-sign` brokers visit-photo storage — see [GCS_SETUP.md](GCS_SETUP.md) for
+   its bucket and secrets.
 
 ## 7. Test
 

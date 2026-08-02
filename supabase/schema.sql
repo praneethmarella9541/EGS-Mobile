@@ -109,15 +109,37 @@ create table if not exists public.location_visits (
   id            uuid primary key default gen_random_uuid(),
   assignment_id uuid not null references public.assignments (id) on delete cascade,
   user_id       uuid not null references auth.users (id) on delete cascade,
-  place_label   text not null,     -- address the user typed/picked
+  place_label   text not null,     -- name/address of the place the visit is for
   latitude      double precision not null, -- device's live GPS at submit time
   longitude     double precision not null,
-  distance_m    numeric not null,  -- distance between live GPS and the picked address
+  distance_m    numeric not null,  -- distance between live GPS and the picked place
   notes         text not null default '',
   submitted_at  timestamptz not null default now()
 );
 create index if not exists location_visits_assignment_idx
   on public.location_visits (assignment_id);
+
+-- Provenance of the place on a visit. The app captures the place from the
+-- device's live GPS (nearby-places lookup) rather than free text, so the
+-- coordinates are always machine-captured and only the *label* is editable.
+-- These columns are what the admin scrutinises instead of distance_m, which is
+-- near-zero by construction once the place is derived from GPS:
+--   place_source  how the place was obtained — 'nearby' (picked off the
+--                 GPS-derived list), 'reverse_geocode' (street address at the
+--                 GPS point), or 'manual_search' (user searched it by hand).
+--   label_edited  user typed over the fetched name (coordinates unaffected).
+--   gps_accuracy_m  reported accuracy of the fix the list was built from; a
+--                 loose fix means the nearby list may be the wrong building.
+--   fetched_at    when the location was fetched; the gap to submitted_at
+--                 catches "fetch here, submit somewhere else later".
+-- All nullable: visits logged before this flow existed have none of them.
+alter table public.location_visits
+  add column if not exists place_id       text,
+  add column if not exists place_source   text
+    check (place_source in ('nearby', 'reverse_geocode', 'manual_search')),
+  add column if not exists label_edited   boolean not null default false,
+  add column if not exists gps_accuracy_m numeric,
+  add column if not exists fetched_at     timestamptz;
 
 create table if not exists public.visit_photos (
   id         uuid primary key default gen_random_uuid(),
@@ -182,35 +204,15 @@ create policy "visit photos delete own"
   ));
 
 -- ============================================================================
--- 9. Storage bucket for bulk visit photos (private). Files live under <uid>/<visit_id>/...
+-- 9. Visit photo files live in a private Google Cloud Storage bucket, not in
+--    Supabase Storage — `visit_photos.photo_path` is a GCS object name of the
+--    form <uid>/<visit_id>/<n>-<ts>.jpg. There is no bucket or storage policy
+--    to declare here: GCS can't evaluate a Supabase JWT, so the `gcs-sign`
+--    Edge Function enforces the equivalent rules (own photos, or any photo for
+--    an admin) and issues short-lived signed URLs. See docs/GCS_SETUP.md.
+--
+--    The policies above on public.visit_photos still guard the *rows*.
 -- ============================================================================
-insert into storage.buckets (id, name, public)
-values ('visit-photos', 'visit-photos', false)
-on conflict (id) do nothing;
-
-drop policy if exists "visit photos storage insert own" on storage.objects;
-create policy "visit photos storage insert own"
-  on storage.objects for insert to authenticated
-  with check (
-    bucket_id = 'visit-photos'
-    and (storage.foldername(name))[1] = auth.uid()::text
-  );
-
-drop policy if exists "visit photos storage read own or admin" on storage.objects;
-create policy "visit photos storage read own or admin"
-  on storage.objects for select to authenticated
-  using (
-    bucket_id = 'visit-photos'
-    and ((storage.foldername(name))[1] = auth.uid()::text or public.is_admin())
-  );
-
-drop policy if exists "visit photos storage delete own" on storage.objects;
-create policy "visit photos storage delete own"
-  on storage.objects for delete to authenticated
-  using (
-    bucket_id = 'visit-photos'
-    and (storage.foldername(name))[1] = auth.uid()::text
-  );
 
 -- ============================================================================
 -- 10. Google OAuth refresh tokens (for the Forms API). Sensitive — RLS denies
@@ -302,3 +304,40 @@ create policy "app_settings admin write"
 -- (components/forms/FormResponsesTab.tsx) matches each response to a
 -- location_visits row by submission time (see lib/visit-match.ts), using data
 -- the field user never touches.
+
+-- ============================================================================
+-- 11. Push notification device tokens (Expo). Field users get a push when an
+--     admin assigns them an area. Tokens are registered by the app after login;
+--     the notify-assignment Edge Function (service role) reads them to send.
+-- ============================================================================
+create table if not exists public.push_device_tokens (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null references auth.users (id) on delete cascade,
+  expo_push_token text not null,
+  platform        text,
+  updated_at      timestamptz not null default now(),
+  unique (user_id, expo_push_token)
+);
+create index if not exists push_device_tokens_user_id_idx
+  on public.push_device_tokens (user_id);
+
+alter table public.push_device_tokens enable row level security;
+
+-- Each user manages only their own tokens. (Service role bypasses RLS to read
+-- them when sending.)
+drop policy if exists push_device_tokens_select_own on public.push_device_tokens;
+create policy push_device_tokens_select_own on public.push_device_tokens
+  for select to authenticated using (user_id = auth.uid());
+
+drop policy if exists push_device_tokens_insert_own on public.push_device_tokens;
+create policy push_device_tokens_insert_own on public.push_device_tokens
+  for insert to authenticated with check (user_id = auth.uid());
+
+drop policy if exists push_device_tokens_update_own on public.push_device_tokens;
+create policy push_device_tokens_update_own on public.push_device_tokens
+  for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+drop policy if exists push_device_tokens_delete_own on public.push_device_tokens;
+create policy push_device_tokens_delete_own on public.push_device_tokens
+  for delete to authenticated using (user_id = auth.uid());

@@ -1,4 +1,4 @@
-/** Warm editorial palette for EGS CRM (copper / ink). */
+/** Warm editorial palette for The Nucleus - Marketing (copper / ink). */
 export const Theme = {
   bg: '#F5F3EF',
   surface: '#FFFFFF',

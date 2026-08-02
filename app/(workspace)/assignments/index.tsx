@@ -11,7 +11,6 @@ import {
   TextInput,
   Platform,
   RefreshControl,
-  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -28,6 +27,8 @@ import {
   type AssignableUser,
 } from '../../../lib/assignments';
 import { forms as formsApi, type FormListItem } from '../../../lib/forms';
+import { getFieldForm } from '../../../lib/settings';
+import { notifyAssignmentCreated } from '../../../lib/notify';
 import type { Assignment } from '../../../lib/types';
 
 type AreaRow = { areaLabel: string; form: { id: string; title: string; url: string } | null };
@@ -47,6 +48,8 @@ export default function AssignmentsScreen() {
   const [saving, setSaving] = useState(false);
   const [formPickerRow, setFormPickerRow] = useState<number | null>(null);
   const [resolvingFormRow, setResolvingFormRow] = useState<number | null>(null);
+  // The global "field form" (starred default) — shown on areas with no override.
+  const [defaultForm, setDefaultForm] = useState<{ id: string; title: string } | null>(null);
 
   const dateKey = toDateKey(date);
 
@@ -67,6 +70,35 @@ export default function AssignmentsScreen() {
     if (isAdmin) load();
     else setLoading(false);
   }, [isAdmin, load]);
+
+  // Resolve the starred/default field form's name once, so each area row with no
+  // per-area override can show what will actually be assigned to the user. The
+  // title comes from the forms list; fall back to a generic label if Google
+  // isn't reachable, and leave null if no default is configured.
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ff = await getFieldForm();
+        if (cancelled) return;
+        if (!ff) return setDefaultForm(null);
+        let title = 'Default field form';
+        try {
+          const list = await formsApi.list();
+          if (!cancelled) title = list.find((f) => f.id === ff.id)?.title ?? title;
+        } catch {
+          /* Google not linked / offline — keep the generic label */
+        }
+        if (!cancelled) setDefaultForm({ id: ff.id, title });
+      } catch {
+        /* no default configured or fetch failed — leave as null */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin]);
 
   const byUser = useMemo(() => {
     const map = new Map<string, Assignment[]>();
@@ -133,6 +165,10 @@ export default function AssignmentsScreen() {
         dateKey,
         items: items.map((a) => ({ areaLabel: a.areaLabel, form: a.form })),
       });
+      // Best-effort push to the assigned user, naming the area(s) that saved.
+      const failedLabels = new Set(failed.map((f) => f.areaLabel));
+      const okLabels = items.map((a) => a.areaLabel).filter((l) => !failedLabels.has(l));
+      if (okLabels.length) void notifyAssignmentCreated(formUser.id, okLabels, dateKey);
       setFormUser(null);
       await load();
       if (failed.length) {
@@ -189,12 +225,15 @@ export default function AssignmentsScreen() {
           value={date}
           mode="date"
           display={Platform.OS === 'ios' ? 'inline' : 'default'}
-          onChange={(_e, selected) => {
+          onChange={(e, selected) => {
             setShowPicker(false);
-            if (selected) {
-              setLoading(true);
-              setDate(selected);
-            }
+            // Android fires 'dismissed' (tap-away / Cancel) with the current date —
+            // ignore it, and ignore re-picking the same day, so we never flip into
+            // a loading state that has nothing to reload (was: infinite spinner).
+            if (e.type !== 'set' || !selected) return;
+            if (toDateKey(selected) === dateKey) return;
+            setLoading(true);
+            setDate(selected);
           }}
         />
       )}
@@ -273,10 +312,7 @@ export default function AssignmentsScreen() {
 
       {/* Add-assignment modal */}
       <Modal visible={!!formUser} animationType="slide" transparent onRequestClose={() => setFormUser(null)}>
-        <KeyboardAvoidingView
-          style={styles.modalBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
+        <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
@@ -333,10 +369,21 @@ export default function AssignmentsScreen() {
                       </TouchableOpacity>
                     </View>
                   ) : (
-                    <TouchableOpacity style={styles.formPickBtn} onPress={() => setFormPickerRow(i)}>
-                      <Ionicons name="swap-horizontal-outline" size={16} color={Colors.primary} />
-                      <Text style={styles.formPickText}>Use a different form for this area</Text>
-                    </TouchableOpacity>
+                    <>
+                      {defaultForm && (
+                        <View style={styles.defaultFormChip}>
+                          <Ionicons name="star" size={14} color={Colors.primary} />
+                          <Text style={styles.defaultFormText} numberOfLines={1}>
+                            {defaultForm.title}
+                          </Text>
+                          <Text style={styles.defaultFormTag}>will be assigned</Text>
+                        </View>
+                      )}
+                      <TouchableOpacity style={styles.formPickBtn} onPress={() => setFormPickerRow(i)}>
+                        <Ionicons name="swap-horizontal-outline" size={16} color={Colors.primary} />
+                        <Text style={styles.formPickText}>Use a different form for this area</Text>
+                      </TouchableOpacity>
+                    </>
                   )}
                 </View>
               ))}
@@ -369,7 +416,7 @@ export default function AssignmentsScreen() {
               }}
             />
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </View>
   );
@@ -521,6 +568,18 @@ const styles = StyleSheet.create({
   },
   formChipText: { flex: 1, fontSize: 13, color: Colors.text, fontWeight: '500' },
   formChipAction: { fontSize: 12, color: Colors.primary, fontWeight: '700' },
+  defaultFormChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    backgroundColor: Colors.primaryLight,
+    marginTop: 8,
+  },
+  defaultFormText: { flex: 1, fontSize: 13, color: Colors.text, fontWeight: '600' },
+  defaultFormTag: { fontSize: 11, color: Colors.textMuted, fontWeight: '600' },
   saveBtn: {
     backgroundColor: Colors.primary,
     borderRadius: 12,

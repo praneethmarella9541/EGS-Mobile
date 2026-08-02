@@ -14,10 +14,33 @@ export interface Profile {
 }
 
 /**
- * Acceptable distance (metres) between a user's live GPS and the address they
- * typed/picked for a location visit — logging a visit is blocked outside this.
+ * Acceptable distance (metres) between a user's live GPS and the place they
+ * picked for a location visit — logging a visit is blocked outside this.
+ *
+ * Since the place is normally derived *from* the GPS fix (see PlaceSource), this
+ * is usually near-zero at pick time. It still earns its keep at submit time: the
+ * GPS is re-read on "Log visit", so this catches a user who fetches at the
+ * school and then submits from somewhere else.
  */
 export const GEO_RADIUS_M = 200;
+
+/**
+ * Worst GPS accuracy (metres) we'll build a nearby-places list from. Beyond
+ * this the fix is too loose to say which building the user is standing in —
+ * common indoors — so we ask them to move and retry instead of offering a list
+ * of the wrong places.
+ */
+export const GPS_ACCURACY_MAX_M = 100;
+
+/** Above this we still allow the visit but warn the user the list may be off. */
+export const GPS_ACCURACY_WARN_M = 50;
+
+/**
+ * How the place on a visit was obtained. Coordinates are machine-captured in
+ * every case — this records how much the *user* steered the choice, which is
+ * the admin's scrutiny signal now that distance_m is near-zero by construction.
+ */
+export type PlaceSource = 'nearby' | 'reverse_geocode' | 'manual_search';
 
 /**
  * Face registration + check-in face verification are wired but disabled for now
@@ -50,21 +73,31 @@ export interface VisitPhoto {
 }
 
 /**
- * A user-logged visit to a specific place within their assigned area — the
- * user types/picks the address, and must be within GEO_RADIUS_M of it (their
- * live GPS vs the picked address) to log it. N per assignment per day
- * (unlimited, user-driven).
+ * A user-logged visit to a specific place within their assigned area. The place
+ * is captured from the device's live GPS (nearby buildings/schools around the
+ * user), so the coordinates are never user-supplied — only the label can be
+ * edited. The user must still be within GEO_RADIUS_M of it at submit time. N per
+ * assignment per day (unlimited, user-driven).
  */
 export interface LocationVisit {
   id: string;
   assignment_id: string;
   user_id: string;
-  place_label: string; // address the user typed/picked
+  place_label: string; // name/address of the place visited
   latitude: number; // device's live GPS at submit time
   longitude: number;
-  distance_m: number; // distance between live GPS and the picked address
+  distance_m: number; // distance between live GPS and the picked place
   notes: string;
   submitted_at: string;
+  /** Google place_id of the picked place; null for reverse-geocoded addresses. */
+  place_id: string | null;
+  /** Null on visits logged before the GPS-first flow existed. */
+  place_source: PlaceSource | null;
+  /** User typed over the fetched name — coordinates are unaffected. */
+  label_edited: boolean;
+  gps_accuracy_m: number | null;
+  /** When the location was fetched; gap to submitted_at is a tamper signal. */
+  fetched_at: string | null;
   photos: VisitPhoto[];
 }
 

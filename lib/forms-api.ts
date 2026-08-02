@@ -20,8 +20,13 @@ export interface SaveResult {
  * them to Google. get/responses are thin pass-throughs.
  */
 export const formsApi = {
-  async get(formId: string): Promise<GoogleForm> {
-    const { form } = await callEdge<{ form: GoogleForm }>('google-forms', { action: 'get', formId });
+  async get(formId: string, opts?: { bare?: boolean }): Promise<GoogleForm> {
+    const { form } = await callEdge<{ form: GoogleForm }>('google-forms', {
+      action: 'get',
+      formId,
+      // bare = skip the share / filename / email side-effects (just fetch).
+      bare: opts?.bare,
+    });
     return form;
   },
 
@@ -41,7 +46,8 @@ export const formsApi = {
   },
 
   async save(formId: string, state: EditorState): Promise<SaveResult> {
-    const prev = await formsApi.get(formId);
+    // Only need the current form to diff against — skip share/filename side-effects.
+    const prev = await formsApi.get(formId, { bare: true });
     const { requests, writeControl } = buildBatchUpdateRequests(prev, state);
     if (requests.length === 0) return { ok: true, noChanges: true, form: prev };
     const { form } = await callEdge<{ form: GoogleForm }>('google-forms', {

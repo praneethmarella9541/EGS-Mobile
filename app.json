@@ -1,24 +1,30 @@
 {
   "expo": {
-    "name": "EGS CRM",
+    "name": "The Nucleus - Marketing",
     "slug": "egs-field-attendance",
     "version": "1.0.0",
     "scheme": "egscrm",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "icon": "./assets/icon.png",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "in.egs.crm",
+      "bundleIdentifier": "com.thenucleus.crm",
       "infoPlist": {
-        "NSSpeechRecognitionUsageDescription": "EGS CRM uses speech recognition to convert your dictated notes to text.",
-        "NSMicrophoneUsageDescription": "EGS CRM uses the microphone to let you dictate notes."
+        "NSSpeechRecognitionUsageDescription": "The Nucleus - Marketing uses speech recognition to convert your dictated notes to text.",
+        "NSMicrophoneUsageDescription": "The Nucleus - Marketing uses the microphone to let you dictate notes."
       }
     },
     "android": {
-      "package": "in.egs.crm",
+      "package": "com.thenucleus.crm",
+      "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "edgeToEdgeEnabled": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
@@ -44,7 +50,8 @@
       ]
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-router",
@@ -54,28 +61,35 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "EGS CRM uses your location to verify attendance at the assigned site."
+          "locationWhenInUsePermission": "The Nucleus - Marketing uses your location to verify attendance at the assigned site."
         }
       ],
       [
         "expo-image-picker",
         {
-          "cameraPermission": "EGS CRM uses the camera to capture your attendance photo."
+          "cameraPermission": "The Nucleus - Marketing uses the camera to capture your attendance photo."
         }
       ],
       [
         "expo-speech-recognition",
         {
-          "microphonePermission": "EGS CRM uses the microphone to let you dictate notes.",
-          "speechRecognitionPermission": "EGS CRM uses speech recognition to convert your dictated notes to text."
+          "microphonePermission": "The Nucleus - Marketing uses the microphone to let you dictate notes.",
+          "speechRecognitionPermission": "The Nucleus - Marketing uses speech recognition to convert your dictated notes to text."
         }
       ],
       [
         "expo-media-library",
         {
-          "photosPermission": "EGS CRM needs access to your photos to save downloaded images.",
-          "savePhotosPermission": "EGS CRM needs permission to save images to your photo library.",
-          "isAccessMediaLocationEnabled": false
+          "photosPermission": "The Nucleus - Marketing needs access to your photos to save downloaded images.",
+          "savePhotosPermission": "The Nucleus - Marketing needs permission to save images to your photo library.",
+          "isAccessMediaLocationEnabled": false,
+          "granularPermissions": ["photo"]
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#C45C1A"
         }
       ]
     ],

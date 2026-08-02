@@ -211,11 +211,14 @@ export function responsesToCsv(
     }
   }
 
+  // Email / Score are Google Forms metadata, not questions — only include them
+  // when the form actually produced that data (email collection on / quiz).
+  const hasEmail = responses.some((r) => r.respondentEmail);
+  const hasScore = responses.some((r) => r.totalScore != null);
+
   const headers = [
-    'Response ID',
-    'Submitted',
-    'Email',
-    'Score',
+    ...(hasEmail ? ['Email'] : []),
+    ...(hasScore ? ['Score'] : []),
     ...(verifiedByResponseId
       ? ['Submitted by (verified)', 'Location (verified)', 'Visit date (verified)']
       : []),
@@ -224,10 +227,8 @@ export function responsesToCsv(
   const rows = responses.map((r) => {
     const verified = verifiedByResponseId?.get(r.responseId);
     const cells = [
-      r.responseId,
-      r.lastSubmittedTime || r.createTime || '',
-      r.respondentEmail || '',
-      r.totalScore != null ? String(r.totalScore) : '',
+      ...(hasEmail ? [r.respondentEmail || ''] : []),
+      ...(hasScore ? [r.totalScore != null ? String(r.totalScore) : ''] : []),
       ...(verifiedByResponseId
         ? [
             verified?.userLabel ?? '',

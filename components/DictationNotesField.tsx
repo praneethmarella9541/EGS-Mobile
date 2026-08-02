@@ -1,8 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Modal, Pressable, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { Colors } from '../constants/colors';
+
+// expo-speech-recognition is a THIRD-PARTY native module — it is NOT bundled in
+// Expo Go. A top-level import would throw at module-eval there and take down any
+// screen that renders this field (→ expo-router "Unmatched Route"). Import it
+// defensively: in Expo Go dictation degrades to a plain notes box; full
+// dictation works in dev-client / standalone builds that include the module.
+type SpeechModule = typeof import('expo-speech-recognition');
+let speech: SpeechModule | null = null;
+try {
+  speech = require('expo-speech-recognition') as SpeechModule;
+} catch {
+  speech = null;
+}
+const DICTATION_AVAILABLE = !!speech?.ExpoSpeechRecognitionModule;
+const useSpeechRecognitionEvent: SpeechModule['useSpeechRecognitionEvent'] =
+  speech?.useSpeechRecognitionEvent ?? (((_event: unknown, _listener: unknown) => {}) as any);
 
 /** Languages offered for dictation — common Indian regional languages + English. */
 const DICTATION_LANGUAGES: { code: string; label: string }[] = [
@@ -67,17 +82,19 @@ export function DictationNotesField({ value, onChangeText, placeholder }: Props)
   });
 
   async function startDictation() {
-    const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+    const mod = speech?.ExpoSpeechRecognitionModule;
+    if (!mod) return;
+    const perm = await mod.requestPermissionsAsync();
     if (!perm.granted) {
       Alert.alert('Microphone access needed', 'Allow microphone and speech recognition access to dictate notes.');
       return;
     }
     sessionBaseRef.current = valueRef.current;
-    ExpoSpeechRecognitionModule.start({ lang: dictationLang.code, interimResults: true, continuous: true });
+    mod.start({ lang: dictationLang.code, interimResults: true, continuous: true });
   }
 
   function stopDictation() {
-    ExpoSpeechRecognitionModule.stop();
+    speech?.ExpoSpeechRecognitionModule?.stop();
   }
 
   function toggleDictation() {
@@ -92,22 +109,24 @@ export function DictationNotesField({ value, onChangeText, placeholder }: Props)
     <View>
       <View style={styles.detailsHeader}>
         <Text style={styles.fieldLabel}>Details</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <TouchableOpacity style={styles.langBtn} onPress={() => setLangPickerOpen(true)} hitSlop={8}>
-            <Text style={styles.langBtnText}>{dictationLang.label}</Text>
-            <Ionicons name="chevron-down" size={12} color={Colors.primary} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.micBtn, listening && styles.micBtnActive]}
-            onPress={toggleDictation}
-            hitSlop={8}
-          >
-            <Ionicons name={listening ? 'mic' : 'mic-outline'} size={16} color={listening ? '#fff' : Colors.primary} />
-            <Text style={[styles.micBtnText, listening && { color: '#fff' }]}>
-              {listening ? 'Listening…' : 'Tap to dictate'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+        {DICTATION_AVAILABLE && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TouchableOpacity style={styles.langBtn} onPress={() => setLangPickerOpen(true)} hitSlop={8}>
+              <Text style={styles.langBtnText}>{dictationLang.label}</Text>
+              <Ionicons name="chevron-down" size={12} color={Colors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.micBtn, listening && styles.micBtnActive]}
+              onPress={toggleDictation}
+              hitSlop={8}
+            >
+              <Ionicons name={listening ? 'mic' : 'mic-outline'} size={16} color={listening ? '#fff' : Colors.primary} />
+              <Text style={[styles.micBtnText, listening && { color: '#fff' }]}>
+                {listening ? 'Listening…' : 'Tap to dictate'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
       <TextInput
         style={styles.notesInput}

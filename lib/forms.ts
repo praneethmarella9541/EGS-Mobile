@@ -1,4 +1,5 @@
 import { callEdge } from './edge';
+import { supabase } from './supabase';
 
 /** A form as listed from the admin's Google Drive. */
 export interface FormListItem {
@@ -35,12 +36,31 @@ export const forms = {
     return callEdge<{ ok: true }>('google-forms', { action: 'delete', formId });
   },
 
-  /** Resolve the public responder (fill) URL for a form. */
+  /**
+   * Public responder URLs already stored in public.forms (app-created forms),
+   * keyed by form id. A single Supabase read — no Google round-trip — so
+   * copy-link is instant for these forms. Falls back to responderUri() for
+   * forms not mirrored here (e.g. imported ones).
+   */
+  async cachedResponderUris(): Promise<Record<string, string>> {
+    const { data } = await supabase.from('forms').select('id, responder_uri');
+    const map: Record<string, string> = {};
+    for (const row of data ?? []) {
+      if (row.responder_uri) map[row.id as string] = row.responder_uri as string;
+    }
+    return map;
+  },
+
+  /**
+   * Resolve the public responder (fill) URL for a form, and make it openable by
+   * field users with no Google login (forResponders → relax verified email
+   * collection + ensure link sharing).
+   */
   async responderUri(formId: string): Promise<{ uri: string; shareWarning: string | null }> {
     const { form, shareWarning } = await callEdge<{
       form: Record<string, unknown>;
       shareWarning?: string | null;
-    }>('google-forms', { action: 'get', formId });
+    }>('google-forms', { action: 'get', formId, forResponders: true });
     return { uri: String(form.responderUri ?? ''), shareWarning: shareWarning ?? null };
   },
 };

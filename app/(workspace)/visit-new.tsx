@@ -10,12 +10,13 @@ import {
   Image,
   Platform,
   KeyboardAvoidingView,
+  Keyboard,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { AddressAutocomplete, type AddressPick } from '../../components/AddressAutocomplete';
+import { NearbyPlacePicker, type PlacePick } from '../../components/NearbyPlacePicker';
 import { DictationNotesField } from '../../components/DictationNotesField';
 import { Colors } from '../../constants/colors';
 import { getCurrentPosition } from '../../lib/geo';
@@ -24,9 +25,10 @@ import { resolveAssignmentForm } from '../../lib/settings';
 import type { Assignment } from '../../lib/types';
 
 /**
- * Field user logs one specific place within their assigned area: they type/pick
- * the address, and must be within GEO_RADIUS_M of it (live GPS vs the picked
- * address) to log it — plus bulk photos and notes.
+ * Field user logs one specific place within their assigned area: they fetch
+ * their location and pick the building/school they're at from what's around
+ * them (see NearbyPlacePicker), then must still be within GEO_RADIUS_M of it
+ * when they submit — plus bulk photos and notes.
  */
 export default function VisitNewScreen() {
   const insets = useSafeAreaInsets();
@@ -39,17 +41,10 @@ export default function VisitNewScreen() {
     formUrl?: string;
   }>();
 
-  const [place, setPlace] = useState('');
-  const [addressPick, setAddressPick] = useState<AddressPick | null>(null);
+  const [place, setPlace] = useState<PlacePick | null>(null);
   const [notes, setNotes] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-
-  function onPlaceChange(text: string) {
-    setPlace(text);
-    // Typing invalidates any previously picked coordinates — must re-pick to geofence.
-    setAddressPick(null);
-  }
 
   async function takePhoto() {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -84,11 +79,15 @@ export default function VisitNewScreen() {
   }
 
   async function submit() {
-    if (!addressPick) {
+    Keyboard.dismiss();
+    if (!place) {
       return Alert.alert(
-        'Pick an address',
-        'Search and select the exact address from the suggestions so we can verify your location.'
+        'Pick a place',
+        'Tap "Fetch my location" and choose the building you\'re at so we can record where this visit happened.'
       );
+    }
+    if (!place.label.trim()) {
+      return Alert.alert('Name this place', 'The place name can\'t be empty.');
     }
 
     const assignment: Assignment = {
@@ -104,22 +103,29 @@ export default function VisitNewScreen() {
 
     setSaving(true);
     try {
+      // Re-read GPS rather than reusing the fix the place was fetched with —
+      // that's what makes the geofence check below mean anything.
       const device = await getCurrentPosition();
       await createVisit({
         assignment,
-        placeLabel: addressPick.label,
-        addressLat: addressPick.lat,
-        addressLng: addressPick.lng,
+        placeLabel: place.label,
+        addressLat: place.lat,
+        addressLng: place.lng,
         deviceLat: device.lat,
         deviceLng: device.lng,
         notes,
         photoUris: photos,
+        placeId: place.placeId,
+        placeSource: place.source,
+        labelEdited: place.labelEdited,
+        gpsAccuracyM: place.gpsAccuracyM ?? device.accuracyM,
+        fetchedAt: place.fetchedAt,
       });
       const field = await resolveAssignmentForm(assignment);
       if (field) {
         router.replace({
           pathname: '/(workspace)/form-view',
-          params: { url: field.url, title: addressPick.label },
+          params: { url: field.url, title: place.label },
         } as any);
       } else {
         Alert.alert('Visit logged', 'No field form is set yet — ask your admin to set one in the Forms tab.', [
@@ -136,7 +142,7 @@ export default function VisitNewScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { paddingTop: insets.top }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={10} accessibilityLabel="Back">
@@ -149,19 +155,11 @@ export default function VisitNewScreen() {
 
       <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
         <Text style={styles.fieldLabel}>Place</Text>
-        <AddressAutocomplete
-          value={place}
-          onChangeText={onPlaceChange}
-          onSelect={(pick) => {
-            setPlace(pick.label);
-            setAddressPick(pick);
-          }}
-          placeholder="Search the exact address you're at…"
-        />
-        {addressPick ? (
-          <Text style={styles.pickedOk}>✓ Address pinned — we'll check you're nearby when you submit.</Text>
+        <NearbyPlacePicker value={place} onChange={setPlace} />
+        {place ? (
+          <Text style={styles.pickedOk}>✓ Place pinned — we'll re-check your location when you submit.</Text>
         ) : (
-          <Text style={styles.hint}>Pick a suggestion so we can verify you're actually there.</Text>
+          <Text style={styles.hint}>Fetch your location and pick the building you're visiting.</Text>
         )}
 
         <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Photos</Text>

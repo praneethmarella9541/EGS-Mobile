@@ -21,7 +21,17 @@ function json(body: unknown, status = 200) {
   });
 }
 
+// Google access tokens live ~1h. Refreshing one on EVERY action added a full
+// round-trip to oauth2.googleapis.com before any real work. Cache them per
+// refresh token (module scope survives while the isolate stays warm), so bursts
+// of actions — editing a form, assigning several forms — reuse one token.
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
 async function googleAccessToken(refreshToken: string): Promise<string> {
+  const cached = tokenCache.get(refreshToken);
+  // 60s skew so we never hand back an about-to-expire token.
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -36,6 +46,11 @@ async function googleAccessToken(refreshToken: string): Promise<string> {
   if (!res.ok || !data.access_token) {
     throw new Error(data.error_description || data.error || 'Could not refresh Google token');
   }
+  const expiresIn = typeof data.expires_in === 'number' ? data.expires_in : 3600;
+  tokenCache.set(refreshToken, {
+    token: data.access_token,
+    expiresAt: Date.now() + expiresIn * 1000,
+  });
   return data.access_token as string;
 }
 
@@ -75,10 +90,25 @@ Deno.serve(async (req) => {
     .select('refresh_token')
     .eq('user_id', uid)
     .maybeSingle();
-  const refreshToken = cred?.refresh_token;
+  let refreshToken = cred?.refresh_token as string | undefined;
+  if (!refreshToken) {
+    // Fall back to ANY stored admin Google credential. The workspace connects a
+    // single Google account that owns/creates the forms, so any admin's token
+    // can manage and (re)share them — this admin just hasn't connected their own.
+    // Keeps forms working for every admin (and, via public sharing, every field
+    // user) off one shared Google connection.
+    const { data: anyCred } = await admin
+      .from('google_credentials')
+      .select('refresh_token')
+      .not('refresh_token', 'is', null)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    refreshToken = anyCred?.refresh_token as string | undefined;
+  }
   if (!refreshToken) {
     return json(
-      { error: 'Google not connected. Sign out and sign in with Google again to grant Forms access.' },
+      { error: 'Google not connected. Ask an admin to sign in with Google (granting Forms + Drive access) at least once.' },
       400
     );
   }
@@ -91,6 +121,12 @@ Deno.serve(async (req) => {
     writeControl?: unknown;
     pageToken?: string;
     pageSize?: number;
+    // 'get' only: also make the form openable by field users with no Google
+    // login (downgrade "verified email collection", which forces sign-in).
+    forResponders?: boolean;
+    // 'get' only: fetch the form and return immediately, skipping the
+    // share / filename-heal / email side-effects (used by save's diff fetch).
+    bare?: boolean;
   };
   try {
     body = await req.json();
@@ -164,12 +200,13 @@ Deno.serve(async (req) => {
         const form = await res.json();
         if (!res.ok) throw new Error(form.error?.message || 'Failed to create form');
 
-        const titleWarning = await renameDriveFile(form.formId, title, accessToken);
-
-        await ensurePubliclyShared(form.formId, accessToken);
-
         const responderUri: string = form.responderUri;
         const editUri = `https://docs.google.com/forms/d/${form.formId}/edit`;
+
+        // Only the DB mirror row is needed before returning. The Drive filename
+        // rename and public link-share are deferred to the editor's first get()
+        // (the app opens the editor right after create) — skipping them here
+        // makes create return in one Google round-trip instead of three.
         const { data: row, error: insErr } = await admin
           .from('forms')
           .insert({
@@ -182,7 +219,7 @@ Deno.serve(async (req) => {
           .select('*')
           .single();
         if (insErr) throw insErr;
-        return json({ form: row, titleWarning });
+        return json({ form: row, titleWarning: null });
       }
 
       case 'list': {
@@ -204,31 +241,86 @@ Deno.serve(async (req) => {
 
       case 'get': {
         if (!body.formId) return json({ error: 'formId required' }, 400);
-        const res = await fetch(formUrl(body.formId), { headers: gHeaders });
+        const formId = body.formId;
+        const res = await fetch(formUrl(formId), { headers: gHeaders });
         const form = await res.json();
         if (!res.ok) throw new Error(form.error?.message || 'Failed to load form');
 
-        // Self-heal forms whose Drive filename never got set to match the form's
-        // title (e.g. created before this fix) — check the real Drive name
-        // (info.documentTitle from the Forms API is unreliable/not kept in
-        // sync) and rename the file directly if it doesn't match.
-        let titleWarning: string | null = null;
-        if (form.info?.title) {
+        // Diff-only fetch (save): skip every side-effect, just return the form.
+        if (body.bare) return json({ form });
+
+        // The post-fetch steps below touch independent Google resources (Drive
+        // file name, Drive permissions, Forms settings), so run them CONCURRENTLY.
+        // They used to run one-after-another, which is what made setting the
+        // field form slow — total latency was the SUM of every round-trip; now
+        // it's roughly the slowest single call.
+
+        // 1) Self-heal the Drive filename to match the form title (the Forms
+        //    API's info.documentTitle is unreliable, so rename the file directly).
+        const titleTask = (async (): Promise<string | null> => {
+          if (!form.info?.title) return null;
           const driveRes = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(body.formId)}?fields=name`,
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(formId)}?fields=name`,
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
           const driveFile = await driveRes.json().catch(() => ({}));
           if (driveRes.ok && driveFile.name !== form.info.title) {
-            titleWarning = await renameDriveFile(body.formId, form.info.title, accessToken);
+            return renameDriveFile(formId, form.info.title, accessToken);
           }
-        }
+          return null;
+        })();
 
-        const shareWarning = await ensurePubliclyShared(body.formId, accessToken);
-        if (typeof form.linkedSheetId === 'string') {
-          await ensurePubliclyShared(form.linkedSheetId, accessToken);
-        }
-        return json({ form, shareWarning, titleWarning });
+        // 2) Link-share the form (and its linked response sheet) so it opens
+        //    without sign-in.
+        const shareTask = ensurePubliclyShared(formId, accessToken);
+        const sheetShareTask =
+          typeof form.linkedSheetId === 'string'
+            ? ensurePubliclyShared(form.linkedSheetId, accessToken)
+            : Promise.resolve(null);
+
+        // 3) When handing the form to field users (forResponders), relax
+        //    "verified" email collection — it forces a Google sign-in, and field
+        //    users have no login of their own. Downgrade to "responder input"
+        //    (still collects an email, typed, no sign-in). Editor 'get' calls
+        //    omit forResponders, so the admin's chosen setting is never stripped.
+        //    ("Limit to 1 response" also forces sign-in but isn't exposed by the
+        //    Forms API — the admin must turn that off in the form itself.)
+        const loginFixTask = (async (): Promise<string | null> => {
+          if (!(body.forResponders && form?.settings?.emailCollectionType === 'VERIFIED')) {
+            return null;
+          }
+          const upd = await fetch(`${formUrl(formId)}:batchUpdate`, {
+            method: 'POST',
+            headers: gHeaders,
+            body: JSON.stringify({
+              requests: [
+                {
+                  updateSettings: {
+                    settings: { emailCollectionType: 'RESPONDER_INPUT' },
+                    updateMask: 'emailCollectionType',
+                  },
+                },
+              ],
+            }),
+          });
+          if (!upd.ok) {
+            const e = await upd.json().catch(() => ({}));
+            const msg = e.error?.message || `HTTP ${upd.status}`;
+            console.error(`Failed to relax email collection on ${formId}:`, msg);
+            return msg;
+          }
+          if (form.settings) form.settings.emailCollectionType = 'RESPONDER_INPUT';
+          return null;
+        })();
+
+        const [titleWarning, shareWarning, , loginFixWarning] = await Promise.all([
+          titleTask,
+          shareTask,
+          sheetShareTask,
+          loginFixTask,
+        ]);
+
+        return json({ form, shareWarning, titleWarning, loginFixWarning });
       }
 
       case 'batchUpdate': {
@@ -267,17 +359,20 @@ Deno.serve(async (req) => {
 
       case 'delete': {
         if (!body.formId) return json({ error: 'formId required' }, 400);
-        // Forms are Drive files — delete via Drive, then drop our mirror row.
-        const res = await fetch(
-          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(body.formId)}`,
-          { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } }
-        );
+        // Forms are Drive files. The Drive delete and dropping our mirror row are
+        // independent — run them concurrently.
+        const [res] = await Promise.all([
+          fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(body.formId)}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }),
+          admin.from('forms').delete().eq('id', body.formId),
+        ]);
         // 404 = already gone; treat as success.
         if (!res.ok && res.status !== 404) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error?.message || 'Failed to delete form');
         }
-        await admin.from('forms').delete().eq('id', body.formId);
         return json({ ok: true });
       }
 

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet,
   ActivityIndicator, Alert, Switch, Modal, Pressable, useWindowDimensions,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -245,6 +246,7 @@ export default function FormEditScreen() {
         ))}
       </ScrollView>
 
+      <KeyboardAvoidingView style={styles.scroll} behavior="padding">
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: 120 }}
@@ -407,6 +409,7 @@ export default function FormEditScreen() {
           </View>
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
 
       {tab === 'questions' ? (
         <TouchableOpacity style={styles.fab} onPress={() => setAddOpen(true)} activeOpacity={0.85}>

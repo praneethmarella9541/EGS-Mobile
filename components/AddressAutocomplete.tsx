@@ -3,7 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator 
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/colors';
 
-export type AddressPick = { label: string; lat: number; lng: number };
+export type AddressPick = { label: string; lat: number; lng: number; placeId: string | null };
 
 type Props = {
   value: string;
@@ -93,6 +93,7 @@ export function AddressAutocomplete({ value, onChangeText, onSelect, placeholder
           label: data.result.formatted_address || p.description,
           lat: loc.lat,
           lng: loc.lng,
+          placeId: p.place_id,
         });
       }
     } catch {

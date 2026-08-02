@@ -1,14 +1,15 @@
 import React from 'react';
 import { View, Text, StyleSheet, type ViewStyle } from 'react-native';
-import { APP_NAME, APP_MONOGRAM } from '../constants/branding';
+import { APP_NAME } from '../constants/branding';
 import { Theme } from '../constants/theme';
+import { LogoMark } from './LogoMark';
 
 type Size = 'sm' | 'md' | 'lg';
 
-const SIZES: Record<Size, { badge: number; mono: number; font: number }> = {
-  sm: { badge: 28, mono: 11, font: 16 },
-  md: { badge: 52, mono: 18, font: 22 },
-  lg: { badge: 76, mono: 26, font: 28 },
+const SIZES: Record<Size, { badge: number; mark: number; font: number }> = {
+  sm: { badge: 28, mark: 20, font: 16 },
+  md: { badge: 52, mark: 36, font: 22 },
+  lg: { badge: 76, mark: 54, font: 28 },
 };
 
 type Props = {
@@ -36,7 +37,7 @@ export function BrandLogo({
         ]}
         accessibilityLabel={`${APP_NAME} logo`}
       >
-        <Text style={[styles.mono, { fontSize: dims.mono }]}>{APP_MONOGRAM}</Text>
+        <LogoMark size={dims.mark} color="#FFFFFF" />
       </View>
       {showName ? (
         <Text style={[styles.name, { fontSize: dims.font, color: nameColor }]} numberOfLines={1}>
@@ -55,6 +56,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  mono: { color: '#FFFFFF', fontWeight: '800', letterSpacing: 0.5 },
   name: { fontWeight: '700', letterSpacing: 0.2 },
 });

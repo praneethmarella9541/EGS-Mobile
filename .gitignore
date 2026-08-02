@@ -15,6 +15,11 @@ node_modules/
 .env*.local
 .env
 
+# Firebase Admin SDK service-account keys — SECRET (full project admin).
+# These belong in EAS credentials only, never in git.
+*firebase-adminsdk*.json
+*-service-account*.json
+
 # macOS
 .DS_Store
 

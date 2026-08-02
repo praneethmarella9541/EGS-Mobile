@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Linking } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,13 +24,6 @@ export default function FormViewScreen() {
         <Text style={styles.title} numberOfLines={1}>
           {title || 'Form'}
         </Text>
-        <TouchableOpacity
-          onPress={() => formUrl && Linking.openURL(formUrl)}
-          hitSlop={10}
-          accessibilityLabel="Open in browser"
-        >
-          <Ionicons name="open-outline" size={22} color={Colors.primary} />
-        </TouchableOpacity>
       </View>
 
       {formUrl ? (

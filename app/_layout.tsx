@@ -5,6 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthContext, useAuth, useAuthState } from '../hooks/useAuth';
+import { usePushNotifications } from '../hooks/usePushNotifications';
 import LoadingScreen from '../components/LoadingScreen';
 import { FACE_VERIFICATION_ENABLED } from '../lib/types';
 
@@ -59,6 +60,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout() {
   const auth = useAuthState();
+  usePushNotifications(auth.session);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

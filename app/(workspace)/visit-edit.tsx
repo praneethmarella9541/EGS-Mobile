@@ -10,6 +10,7 @@ import {
   Image,
   Platform,
   KeyboardAvoidingView,
+  Keyboard,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { DictationNotesField } from '../../components/DictationNotesField';
 import { Colors } from '../../constants/colors';
-import { getVisit, updateVisit, deleteVisitPhoto, getPhotoUrl } from '../../lib/visits';
+import { getVisit, updateVisit, deleteVisitPhoto, getPhotoUrls } from '../../lib/visits';
 import type { LocationVisit, VisitPhoto } from '../../lib/types';
 
 type ExistingPhoto = { photo: VisitPhoto; url: string | null };
@@ -42,10 +43,8 @@ export default function VisitEditScreen() {
         const v = await getVisit(visitId);
         setVisit(v);
         setNotes(v.notes);
-        const withUrls = await Promise.all(
-          v.photos.map(async (photo) => ({ photo, url: await getPhotoUrl(photo.photo_path) }))
-        );
-        setExistingPhotos(withUrls);
+        const urls = await getPhotoUrls(v.photos.map((photo) => photo.photo_path));
+        setExistingPhotos(v.photos.map((photo, i) => ({ photo, url: urls[i] })));
       } catch (e: any) {
         Alert.alert('Error', e?.message ?? 'Could not load this visit');
         router.back();
@@ -92,6 +91,7 @@ export default function VisitEditScreen() {
   }
 
   async function save() {
+    Keyboard.dismiss();
     setSaving(true);
     try {
       const toRemove = existingPhotos.filter((p) => removedPhotoIds.has(p.photo.id));
@@ -120,7 +120,7 @@ export default function VisitEditScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { paddingTop: insets.top }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
     >
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} hitSlop={10} accessibilityLabel="Back">
