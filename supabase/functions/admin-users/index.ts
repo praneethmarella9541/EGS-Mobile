@@ -4,9 +4,11 @@
 //
 // Deploy:  supabase functions deploy admin-users
 // Secrets: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY are
-//          injected automatically by Supabase at runtime.
+//          injected automatically by Supabase at runtime. Deleting a user also
+//          purges their photos from GCS, which needs GCS_SA_KEY + GCS_BUCKET.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { deletePrefix } from '../_shared/gcs.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -22,7 +24,7 @@ function json(body: unknown, status = 200) {
   });
 }
 
-type Action = 'list' | 'create' | 'update' | 'delete';
+type Action = 'list' | 'create' | 'update' | 'delete' | 'block' | 'unblock';
 interface Payload {
   action: Action;
   id?: string;
@@ -32,6 +34,10 @@ interface Payload {
   restricted_features?: string[];
   mobile_phone?: string | null;
 }
+
+// GoTrue's ban is a duration, not a flag — there's no "forever". 100 years is
+// the idiomatic stand-in every Supabase admin-ban example uses.
+const BLOCK_DURATION = '876000h';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -79,7 +85,18 @@ Deno.serve(async (req) => {
           .eq('role', 'user')
           .order('created_at', { ascending: false });
         if (error) throw error;
-        return json({ members: data ?? [] });
+
+        // Blocked status lives on the auth user (ban_duration), not the profile
+        // row, so it's fetched per-member rather than stored redundantly.
+        const members = await Promise.all(
+          (data ?? []).map(async (m) => {
+            const { data: authUser } = await admin.auth.admin.getUserById(m.id);
+            const bannedUntil = authUser?.user?.banned_until;
+            const blocked = !!bannedUntil && new Date(bannedUntil).getTime() > Date.now();
+            return { ...m, blocked };
+          })
+        );
+        return json({ members });
       }
 
       case 'create': {
@@ -133,8 +150,39 @@ Deno.serve(async (req) => {
         return json({ ok: true });
       }
 
+      // Blocking revokes sign-in without touching any data — profile, assignments,
+      // attendance and photos all stay exactly as they are and remain visible
+      // to admins. This is the primary "remove access" action; delete (below)
+      // is the separate, irreversible one.
+      case 'block': {
+        if (!body.id) return json({ error: 'id is required' }, 400);
+        const { error } = await admin.auth.admin.updateUserById(body.id, {
+          ban_duration: BLOCK_DURATION,
+        });
+        if (error) throw error;
+        return json({ ok: true });
+      }
+
+      case 'unblock': {
+        if (!body.id) return json({ error: 'id is required' }, 400);
+        const { error } = await admin.auth.admin.updateUserById(body.id, { ban_duration: 'none' });
+        if (error) throw error;
+        return json({ ok: true });
+      }
+
       case 'delete': {
         if (!body.id) return json({ error: 'id is required' }, 400);
+
+        // Remove the user's uploaded media before deleting the account. DB rows
+        // cascade on user delete, but GCS objects do NOT — visit photos live at
+        // <uid>/<visitId>/… in the bucket, so delete everything under their
+        // prefix. Best-effort: a storage hiccup shouldn't block the deletion.
+        try {
+          await deletePrefix(`${body.id}/`);
+        } catch (e) {
+          console.error('Failed to remove user media on delete:', e);
+        }
+
         const { error } = await admin.auth.admin.deleteUser(body.id);
         if (error) throw error;
         return json({ ok: true });

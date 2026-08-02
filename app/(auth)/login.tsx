@@ -41,7 +41,13 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) Alert.alert('Sign-in failed', error.message);
+      if (error) {
+        const blocked = error.message.toLowerCase().includes('banned');
+        Alert.alert(
+          'Sign-in failed',
+          blocked ? 'Your access has been blocked. Contact your admin.' : error.message
+        );
+      }
     } finally {
       setLoading(false);
     }
